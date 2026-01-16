@@ -1,0 +1,15 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+
+start() {
+    # Clear the static set first
+    nft flush set inet fw4 static_macs
+
+    # Get all static MACs from DHCP config and add them to the firewall set
+    STATIC_MACS=$(uci show dhcp | grep ".mac=" | awk -F"='" '{print $2}' | tr -d "'")
+
+    for mac in $STATIC_MACS; do
+        nft add element inet fw4 static_macs { $mac }
+    done
+}

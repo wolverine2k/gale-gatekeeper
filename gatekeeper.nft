@@ -1,0 +1,28 @@
+#!/bin/sh
+# This script is executed by the firewall as a shell script
+
+nft -f - <<EOF
+# 1. Ensure sets exist
+add set inet fw4 approved_macs { type ether_addr; flags timeout; }
+add set inet fw4 static_macs { type ether_addr; }
+add set inet fw4 bypass_switch { type ether_addr; }
+
+# 2. Ensure the chain exists and is hooked into the forward flow
+add chain inet fw4 gatekeeper_forward { type filter hook forward priority -10; policy accept; }
+
+# 3. Clean the chain so we don't get duplicate rules on reload
+flush chain inet fw4 gatekeeper_forward
+
+# 4. Apply the Gatekeeper logic
+# Rule 1: Emergency Bypass (If MAC ff:ff:ff:ff:ff:ff is in the set, allow all)
+add rule inet fw4 gatekeeper_forward ether saddr @bypass_switch accept
+
+# Rule 2: Allow Static VIPs (From DHCP Leases)
+add rule inet fw4 gatekeeper_forward ether saddr @static_macs accept
+
+# Rule 3: Allow Approved Guests (Temporary)
+add rule inet fw4 gatekeeper_forward ether saddr @approved_macs accept
+
+# Rule 4: Block everyone else from LAN to WAN
+add rule inet fw4 gatekeeper_forward iifname "br-lan" counter drop
+EOF
