@@ -4,6 +4,7 @@
 nft -f - <<EOF
 # 1. Ensure sets exist
 add set inet fw4 approved_macs { type ether_addr; flags timeout; }
+add set inet fw4 denied_macs { type ether_addr; flags timeout; }
 add set inet fw4 static_macs { type ether_addr; }
 add set inet fw4 bypass_switch { type ether_addr; }
 
