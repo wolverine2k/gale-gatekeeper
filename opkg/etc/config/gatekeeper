@@ -18,24 +18,22 @@
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 # AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # SOFTWARE.
-#
 
-# dnsmasq_trigger.sh - Minimal trigger script for dnsmasq events
-# This script is called by dnsmasq when DHCP events occur and sends ubus events
-# for the gatekeeper system to process. It requires no external libraries.
-#
-# Usage: Called automatically by dnsmasq with parameters:
-#   $1 - action (e.g., "add", "old", "del")
-#   $2 - MAC address
-#   $3 - IP address  
-#   $4 - hostname
-#
-# Maintenance Notes:
-# - Keep this script minimal to avoid dependencies issues
-# - This bridges dnsmasq DHCP events to ubus messages
-# - Error handling is intentionally minimal to prevent dnsmasq failures
+# Gatekeeper configuration
+# 
+# This configuration file defines parameters for the gatekeeper network 
+# access control system. Placeholder values are provided below and should be 
+# configured during package deployment.
 
-# Send ubus event with DHCP information for gatekeeper processing
-ubus send dnsmasq.event "{\"action\":\"$1\",\"mac\":\"$2\",\"ip\":\"$3\",\"host\":\"$4\"}"
+# Telegram Bot API Token (required)
+# Obtain from BotFather: https://t.me/botfather
+# Example: TOKEN="1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+option token "YOUR_TELEGRAM_BOT_TOKEN_HERE"
+
+# Telegram Chat ID for notifications (required)  
+# Use this command to find your chat ID: https://api.telegram.org/bot<TOKEN>/getUpdates
+# Or send a message to @userinfobot
+# Example: CHAT_ID="123456789"
+option chat_id "YOUR_CHAT_ID_HERE"

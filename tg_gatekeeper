@@ -1,9 +1,101 @@
 #!/bin/sh /etc/rc.common
-START=99
-USE_PROCD=1
+#
+# The MIT License (MIT)
+# Copyright (c) 2026 Naresh Mehta (https://www.naresh.se/)
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#
+
+# tg_gatekeeper - OpenWrt init script for Telegram gatekeeper bot
+#
+# This init script manages the tg_bot.sh service as a procd-managed daemon.
+# It provides continuous monitoring of Telegram commands and manages the
+# interactive control interface for gatekeeper network access control.
+#
+# Service Configuration:
+# - START=99: Runs very late in boot process to ensure all network services ready
+# - USE_PROCD=1: Uses procd daemon management for restart, logging, and lifecycle management
+# - respawn: Automatic recovery from crashes and failures
+#
+# Service Responsibilities:
+# - Manages tg_bot.sh instance for continuous Telegram polling
+# - Ensures bot restarts automatically on failure
+# - Provides logging integration with system logread
+# - Standard init.d service control (start, stop, restart, enable, disable)
+#
+# Integration Points:
+# - Launches tg_bot.sh at /usr/bin/tg_bot.sh
+# - Bot integrates with nftables firewall sets (approved_macs, denied_macs, static_macs, bypass_switch)
+# - Uses Telegram Bot API for sending/receiving commands
+# - Maintains state files in /tmp for map tracking and offset storage
+#
+# Startup Sequence:
+# - Bot starts after network interfaces are configured
+# - Restarts indefinitely due to respawn configuration
+# - Maintains Telegram update offset to prevent duplicate message processing
+#
+# Monitoring and Debugging:
+# - View logs: logread -f | grep tg_bot
+# - Check service status: /etc/init.d/tg_gatekeeper status
+# - Manual restart: /etc/init.d/tg_gatekeeper restart
+# - Realtime monitoring: /etc/init.d/tg_gatekeeper start (foreground mode)
+#
+# Security Considerations:
+# - Runs with standard privileges (non-root where possible)
+# - Telegram API communication uses HTTPS with token authentication
+# - State files in /tmp are non-persistent (cleared on reboot for security)
+#
+# Dependencies:
+# - curl: For Telegram API communication
+# - jq: For JSON parsing in response handling
+# – tg_bot.sh script installed at /usr/bin/tg_bot.sh
+# - OpenWrt procd daemon management system
+#
+# Usage After Installation:
+#   chmod +x /etc/init.d/tg_gatekeeper
+#   /etc/init.d/tg_gatekeeper enable
+#   /etc/init.d/tg_gatekeeper start
+
+# OpenWrt init system configuration
+START=99              # Very late boot position (near end of startup sequence)
+USE_PROCD=1          # Enable procd daemon mode
+
+# Main service start function called by procd
 start_service() {
-    procd_open_instance
+    procd_open_instance  # Start instance definition
+    
+    # Command to execute: Telegram bot script
     procd_set_param command /bin/sh /usr/bin/tg_bot.sh
+    
+    # Automatically restart if service crashes
     procd_set_param respawn
-    procd_close_instance
+    
+    # Enable logging for monitoring (optional)
+    # procd_set_param stdout 1
+    # procd_set_param stderr 1
+    
+    procd_close_instance  # Finalize instance definition
 }
+
+# Service control commands (examples after installation):
+# /etc/init.d/tg_gatekeeper enable     # Enable auto-start on boot
+# /etc/init.d/tg_gatekeeper start      # Start service now
+# /etc/init.d/tg_gatekeeper stop       # Stop service
+# /etc/init.d/tg_gatekeeper restart    # Restart service
+# /etc/init.d/tg_gatekeeper status     # Check service status
