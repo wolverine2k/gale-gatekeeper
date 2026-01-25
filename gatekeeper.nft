@@ -1,0 +1,117 @@
+#!/bin/sh
+#
+# The MIT License (MIT)
+# Copyright (c) 2026 Naresh Mehta (https://www.naresh.se/)
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#
+
+# gatekeeper.nft - Firewall integration script for gatekeeper network access control
+#
+# This script is executed by OpenWrt's firewall service as part of fw4 reloads.
+# It defines the core firewall rules and nftables structures that enable the
+# gatekeeper access control system.
+#
+# Firewall Architecture:
+# The system uses four nftables sets to manage network access:
+# - static_macs: Permanent whitelist (static DHCP leases) - no timeout
+# - approved_macs: Temporary approved guests - enforced timeout (30min default)
+# - denied_macs: Devices marked as denied - timeout-based blocking
+# - bypass_switch: Emergency global bypass - ff:ff:ff:ff:ff:ff activates it
+#
+# Rule Processing Order (Priority -10 means runs before default filter):
+# 1. Emergency Bypass: Global off switch for emergencies (sets evaluated top-to-bottom)
+# 2. Static VIPs: Permanent always-allowed devices
+# 3. Approved Guests: Devices with temporary approval via Telegram commands
+# 4. Default Block: Blocks all LAN-to-WAN traffic except matched MACs
+#
+# Rule Evaluation:
+# - nftables evaluates rules sequentially until a match is found
+# - 'accept' on static_macs, approved_macs, or bypass_switch stops evaluation
+# - Default block rule drops all remaining packets
+# - 'ether saddr' means Ethernet source MAC address (Layer 2 identifier)
+#
+# Security Considerations:
+# - MAC addresses can be spoofed (sophisticated attackers could bypass)
+# - Designed for home/SMB, not enterprise security
+# - Rate limiting in gatekeeper_trigger.sh prevents flapping issues
+# - Emergency bypass must be manually activated (not default behavior)
+#
+# OpenWrt Integration:
+# - Registered as firewall include via: uci add firewall include (...) type='script'
+# - Executes on every firewall reload (fw4 reload, network changes, etc.)
+# - 'add' directives use 'ensure' semantics (idempotent - safe to rerun)
+#
+# Maintenance Notes:
+# - Rule priority -10: Runs before default -50 priority forward filter
+# - iifname "br-lan": Restricts to LAN interface only (preserves router access)
+# - counter: Tracks statistics for dropped packets (nft list ruleset for stats)
+# - timeout flags: Auto-cleanup after time expires (prevents accumulation)
+#
+# Troubleshooting:
+# - Verify sets exist: nft list set inet fw4 (static_macs|approved_macs|denied_macs)
+# - Check bypass status: nft list set inet fw4 bypass_switch
+# - View rule stats: nft list chain inet fw4 gatekeeper_forward
+# - Live view: nft monitor | grep inet/fw4 (real-time rule evaluation)
+
+# Execute nftables commands inline (using heredoc for readability)
+nft -f - <<EOF
+# 1. Ensure sets exist (idempotent - safe to rerun)
+# approved_macs: Dynamic whitelist with auto-expiring entries
+add set inet fw4 approved_macs { type ether_addr; flags timeout; }
+
+# denied_macs: Devices marked as denied (timeout prevents permanent blocks)
+add set inet fw4 denied_macs { type ether_addr; flags timeout; }
+
+# static_macs: Permanent whitelist (never expires)
+add set inet fw4 static_macs { type ether_addr; }
+
+# bypass_switch: Emergency off-switch set (non-timeout for stability)
+add set inet fw4 bypass_switch { type ether_addr; }
+
+# 2. Ensure the chain exists and is hooked into the forward flow
+# Priority -10: High priority to run before default filters
+# Type filter hook forward: Intercepts packets between networks
+add chain inet fw4 gatekeeper_forward { type filter hook forward priority -10; policy accept; }
+
+# 3. Clean the chain so we don't get duplicate rules on reload
+# Safe to flush even if chain is empty (idempotent)
+flush chain inet fw4 gatekeeper_forward
+
+# 4. Apply the Gatekeeper logic (evaluated in order, first match wins)
+
+# Rule 1: Emergency Bypass
+# If MAC ff:ff:ff:ff:ff:ff is in the bypass set, allow ALL traffic
+# Use format_ff:ff:ff:ff:ff:ff for testing or emergencies
+add rule inet fw4 gatekeeper_forward ether saddr @bypass_switch accept
+
+# Rule 2: Allow Static VIPs (From DHCP Leases)
+# Permanent devices: static DHCP assignments get immediate access
+add rule inet fw4 gatekeeper_forward ether saddr @static_macs accept
+
+# Rule 3: Allow Approved Guests (Temporary)
+# Devices manually approved via Telegram with timeout-based access
+add rule inet fw4 gatekeeper_forward ether saddr @approved_macs accept
+
+# Rule 4: Block everyone else from LAN to WAN
+# Default deny: Blocks LAN->WAN for non-whitelisted MACs
+# iifname "br-lan": Only affects traffic from LAN interface
+# counter: Tracks statistics for dropped packets
+add rule inet fw4 gatekeeper_forward iifname "br-lan" counter drop
+EOF
