@@ -96,7 +96,7 @@ flush chain inet fw4 gatekeeper_forward
 
 # 4. Apply the Gatekeeper logic (evaluated in order, first match wins)
 
-# Rule 1: Emergency Bypass 
+# Rule 1: Emergency Bypass
 # If MAC ff:ff:ff:ff:ff:ff is in the bypass set, allow ALL traffic
 # Use format_ff:ff:ff:ff:ff:ff for testing or emergencies
 add rule inet fw4 gatekeeper_forward ether saddr @bypass_switch accept
