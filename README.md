@@ -1,6 +1,9 @@
 ## File structure in OpenWRT (Tested on Gale)
 
 -------------
+File: /etc/config/gatekeeper
+Purpose: UCI configuration file for Telegram Bot token and chat ID.
+-------------
 File: /etc/gatekeeper.nft
 Purpose: Defines the blocking logic and the "Global Bypass" switch.
 -------------
@@ -56,13 +59,18 @@ uci add firewall include && uci set firewall.@include[-1].path='/etc/gatekeeper.
 - Restart router.
 
 ## Deployment Checklist:
-- Verify TOKEN and CHAT_ID in /usr/bin/gatekeeper.sh and /usr/bin/tg_bot.sh
+- Configure Telegram credentials via UCI:
+  ```bash
+  uci set gatekeeper.main=gatekeeper
+  uci set gatekeeper.main.token='YOUR_BOT_TOKEN'
+  uci set gatekeeper.main.chat_id='YOUR_CHAT_ID'
+  uci commit gatekeeper
+  ```
 - Ensure /etc/gatekeeper.nft has #!/bin/sh at the top
 - Run: chmod +x /usr/bin/gatekeeper.sh /usr/bin/tg_bot.sh /etc/gatekeeper.nft
 - Run: /etc/init.d/firewall restart
 - Run: /etc/init.d/tg_gatekeeper start
 - Test using 'Status' button in Telegram.
-- 
 # 1. Point dnsmasq to your notification script
 uci set dhcp.@dnsmasq[0].dhcpscript='/usr/bin/dnsmasq_trigger.sh'
 uci set dhcp.@dnsmasq[0].dhcp_script='/usr/bin/dnsmasq_trigger.sh'

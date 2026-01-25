@@ -74,11 +74,16 @@
 # - Verify nftables sets accessible: nft list sets
 # - Monitor system logs: logread -f | grep gatekeeper
 
-# Configuration: Telegram Bot API token from BotFather
-TOKEN="1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+# Configuration: Telegram Bot API token and Chat ID from UCI config
+# Read from /etc/config/gatekeeper or fall back to environment variables
+TOKEN="${GATEKEEPER_TOKEN:-$(uci -q get gatekeeper.@main[0].token)}"
+CHAT_ID="${GATEKEEPER_CHAT_ID:-$(uci -q get gatekeeper.@main[0].chat_id)}"
 
-# Configuration: Target Telegram chat/channel ID
-CHAT_ID="xxxxxxxxx"
+# Validate configuration
+if [ -z "$TOKEN" ] || [ -z "$CHAT_ID" ]; then
+    logger -t gatekeeper "ERROR: TOKEN or CHAT_ID not configured. Set via UCI: uci set gatekeeper.@main[0].token='YOUR_TOKEN' && uci set gatekeeper.@main[0].chat_id='YOUR_CHAT_ID'"
+    exit 1
+fi
 
 # Parse input parameters from ubus event listener
 # ACTION: DHCP event type (add, old, del) - 'add' for new connections

@@ -24,16 +24,22 @@
 # Gatekeeper configuration
 # 
 # This configuration file defines parameters for the gatekeeper network 
-# access control system. Placeholder values are provided below and should be 
-# configured during package deployment.
+# access control system. Configure these values after installation.
+#
+# Configuration via UCI commands:
+#   uci set gatekeeper.main=gatekeeper
+#   uci set gatekeeper.main.token='YOUR_TELEGRAM_BOT_TOKEN_HERE'
+#   uci set gatekeeper.main.chat_id='YOUR_CHAT_ID_HERE'
+#   uci commit gatekeeper
 
-# Telegram Bot API Token (required)
-# Obtain from BotFather: https://t.me/botfather
-# Example: TOKEN="1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ"
-option token "YOUR_TELEGRAM_BOT_TOKEN_HERE"
-
-# Telegram Chat ID for notifications (required)  
-# Use this command to find your chat ID: https://api.telegram.org/bot<TOKEN>/getUpdates
-# Or send a message to @userinfobot
-# Example: CHAT_ID="123456789"
-option chat_id "YOUR_CHAT_ID_HERE"
+config gatekeeper 'main'
+	# Telegram Bot API Token (required)
+	# Obtain from BotFather: https://t.me/botfather
+	# Example: option token '1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ'
+	option token 'YOUR_TELEGRAM_BOT_TOKEN_HERE'
+	
+	# Telegram Chat ID for notifications (required)  
+	# Use this command to find your chat ID: https://api.telegram.org/bot<TOKEN>/getUpdates
+	# Or send a message to @userinfobot
+	# Example: option chat_id '123456789'
+	option chat_id 'YOUR_CHAT_ID_HERE'

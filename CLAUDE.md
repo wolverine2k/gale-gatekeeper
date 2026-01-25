@@ -93,9 +93,23 @@ Required on OpenWrt target:
 
 ### Configuration Requirements
 
-Before deployment, configure in `gatekeeper.sh` and `tg_bot.sh`:
-- `TOKEN`: Telegram Bot API token (from BotFather)
-- `CHAT_ID`: Target Telegram chat/channel ID
+After installation, configure Telegram credentials via UCI:
+```bash
+# Configure Telegram Bot token (from BotFather: https://t.me/botfather)
+uci set gatekeeper.main=gatekeeper
+uci set gatekeeper.main.token='YOUR_TELEGRAM_BOT_TOKEN_HERE'
+
+# Configure Telegram Chat ID (send message to @userinfobot to get your ID)
+uci set gatekeeper.main.chat_id='YOUR_CHAT_ID_HERE'
+
+# Save configuration
+uci commit gatekeeper
+
+# Restart services to apply
+/etc/init.d/tg_gatekeeper restart
+```
+
+The configuration is stored in `/etc/config/gatekeeper` and is read by both `gatekeeper.sh` and `tg_bot.sh` via UCI or environment variables (`GATEKEEPER_TOKEN` and `GATEKEEPER_CHAT_ID`).
 
 ### Testing and Debugging
 
@@ -172,7 +186,13 @@ Note: Both `gatekeeper.sh` and `tg_bot.sh` contain duplicated code sections (lin
 
 1. Install dependencies: `opkg update && opkg install jq curl coreutils coreutils-timeout`
 2. Copy files to appropriate locations (see README.md file structure)
-3. Configure TOKEN and CHAT_ID in `gatekeeper.sh` and `tg_bot.sh`
+3. Configure Telegram credentials via UCI:
+   ```bash
+   uci set gatekeeper.main=gatekeeper
+   uci set gatekeeper.main.token='YOUR_BOT_TOKEN'
+   uci set gatekeeper.main.chat_id='YOUR_CHAT_ID'
+   uci commit gatekeeper
+   ```
 4. Set permissions: `chmod +x` on all `.sh` files and init scripts
 5. Configure dnsmasq trigger: `uci set dhcp.@dnsmasq[0].dhcpscript='/usr/bin/dnsmasq_trigger.sh'`
 6. Configure firewall include: `uci add firewall include && uci set firewall.@include[-1].path='/etc/gatekeeper.nft' && uci set firewall.@include[-1].type='script'`
