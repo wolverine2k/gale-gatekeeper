@@ -79,8 +79,8 @@ USE_PROCD=1          # Enable procd daemon mode
 # Main service start function called by procd
 start_service() {
     # Read configuration from UCI
-    local token=$(uci -q get gatekeeper.@main[0].token)
-    local chat_id=$(uci -q get gatekeeper.@main[0].chat_id)
+    local token=$(uci -q get gatekeeper.main.token)
+    local chat_id=$(uci -q get gatekeeper.main.chat_id)
     
     # Validate configuration
     if [ -z "$token" ] || [ -z "$chat_id" ]; then

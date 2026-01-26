@@ -37,7 +37,8 @@ Key state files in `/tmp`:
 - `/tmp/tg_offset`: Telegram update ID tracking (prevents duplicate message processing)
 - `/tmp/gatekeeper.log`: Activity logs
 - `/tmp/mac_names`: Custom hostname cache (MAC=Name pairs from approval)
-- `/tmp/mac_map`: Temporary device ID-to-MAC mapping (for STATUS command)
+- `/tmp/mac_map`: Temporary device ID-to-MAC mapping (for STATUS/EXTEND/REVOKE commands)
+- `/tmp/denied_mac_map`: Temporary device ID-to-MAC mapping (for DSTATUS/DEXTEND/DREVOKE commands)
 - `/tmp/dns_locks/`: Rate limiting timestamp files (60-second cooldown per MAC)
 
 ### Hostname Resolution Priority
@@ -65,9 +66,13 @@ When displaying devices, the bot uses this lookup order:
 ## Telegram Bot Commands
 
 Interactive commands (text-based):
+- **HELP**: Display list of all available commands with descriptions
 - **STATUS**: Show gatekeeper status and active guests with IDs
+- **DSTATUS**: Show all denied devices with hostnames and timeout information
 - **EXTEND ID**: Extend timeout for approved guest by ID
 - **REVOKE ID**: Immediately revoke network access
+- **DEXTEND ID**: Extend denial timeout for denied device by ID (30 min)
+- **DREVOKE ID**: Remove device from denied list (allows new access request)
 - **LOG**: Display recent activity logs
 - **SYNC**: Manually resync static DHCP MACs from UCI config
 - **ENABLE**: Re-enable gatekeeper (clear bypass switch)

@@ -76,8 +76,8 @@
 
 # Configuration: Telegram Bot API token and Chat ID from UCI config
 # Read from /etc/config/gatekeeper or fall back to environment variables
-TOKEN="${GATEKEEPER_TOKEN:-$(uci -q get gatekeeper.@main[0].token)}"
-CHAT_ID="${GATEKEEPER_CHAT_ID:-$(uci -q get gatekeeper.@main[0].chat_id)}"
+TOKEN="${GATEKEEPER_TOKEN:-$(uci -q get gatekeeper.main.token)}"
+CHAT_ID="${GATEKEEPER_CHAT_ID:-$(uci -q get gatekeeper.main.chat_id)}"
 
 # Validate configuration
 if [ -z "$TOKEN" ] || [ -z "$CHAT_ID" ]; then

@@ -45,9 +45,13 @@
 # - Integrates with nftables sets: approved_macs, denied_macs, static_macs, bypass_switch
 #
 # Command Interface:
+# - HELP: Display list of all available commands with descriptions
 # - STATUS: Display gatekeeper status and list active guests with temporary IDs
+# - DSTATUS: Display all denied devices with hostnames and timeout information
 # - EXTEND [ID]: Extend network access timeout for a specific guest (30 min)
 # - REVOKE [ID]: Immediately revoke network access for a specific guest
+# - DEXTEND [ID]: Extend denial timeout for a specific denied device (30 min)
+# - DREVOKE [ID]: Remove device from denied list (allows new access request)
 # - LOG: Display last 10 entries from activity log
 # - SYNC: Manually resynchronize static DHCP leases from UCI to firewall
 # - ENABLE: Re-enable gatekeeper (clear bypass switch)
@@ -62,7 +66,8 @@
 # - /tmp/tg_offset: Telegram update ID tracking (prevents duplicate processing)
 # - /tmp/gatekeeper.log: Activity logs from gatekeeper.sh
 # - /tmp/mac_names: Custom hostname cache (MAC=Name pairs)
-# - /tmp/mac_map: Temporary device ID-to-MAC mapping (used by STATUS command)
+# - /tmp/mac_map: Temporary device ID-to-MAC mapping (used by STATUS/EXTEND/REVOKE commands)
+# - /tmp/denied_mac_map: Temporary device ID-to-MAC mapping (used by DSTATUS/DEXTEND/DREVOKE commands)
 #
 # Hostname Resolution Priority:
 # When displaying device names in STATUS command:
@@ -109,8 +114,8 @@
 # Configuration: Telegram Bot API token and Chat ID from UCI config
 # Read from environment variables (set by init script) or fall back to UCI
 # Environment variables take precedence for init script compatibility
-TOKEN="${GATEKEEPER_TOKEN:-$(uci -q get gatekeeper.@main[0].token)}"
-CHAT_ID="${GATEKEEPER_CHAT_ID:-$(uci -q get gatekeeper.@main[0].chat_id)}"
+TOKEN="${GATEKEEPER_TOKEN:-$(uci -q get gatekeeper.main.token)}"
+CHAT_ID="${GATEKEEPER_CHAT_ID:-$(uci -q get gatekeeper.main.chat_id)}"
 
 # Validate configuration - exit early if credentials not configured
 if [ -z "$TOKEN" ] || [ -z "$CHAT_ID" ]; then
@@ -122,6 +127,7 @@ fi
 LOG_FILE="/tmp/gatekeeper.log"        # Activity logs from gatekeeper.sh
 NAME_MAP="/tmp/mac_names"             # Custom hostname cache (MAC=Name pairs)
 MAP_FILE="/tmp/mac_map"               # Temporary device ID-to-MAC mapping for STATUS
+DENIED_MAP_FILE="/tmp/denied_mac_map" # Temporary device ID-to-MAC mapping for DSTATUS
 OFFSET_FILE="/tmp/tg_offset"          # Telegram update ID tracking
 
 # Load last processed update ID from offset file
@@ -186,7 +192,7 @@ while true; do
                 # Remove from approved list (if present) and add to denied list
                 # 30-minute timeout prevents notification spam for denied devices
                 nft "delete element inet fw4 approved_macs { $MAC }" 2>/dev/null
-		nft "add element inet fw4 denied_macs { $MAC timeout 30m }"
+                nft "add element inet fw4 denied_macs { $MAC timeout 30m }"
                 OUT="❌ Denied: $MAC"
             fi
 
@@ -216,10 +222,36 @@ while true; do
         CMD=$(echo "$TEXT" | awk '{print toupper($1)}')
         ARG=$(echo "$TEXT" | awk '{print $2}')
 
+        # === HELP COMMAND ===
+        # Display list of all available commands with descriptions
+        # Provides user with comprehensive command reference
+        if [ "$CMD" = "HELP" ]; then
+            MSG="📖 *Gatekeeper Commands*\n\n"
+            MSG="${MSG}*Device Management:*\n"
+            MSG="${MSG}\`STATUS\` - Show active approved guests\n"
+            MSG="${MSG}\`DSTATUS\` - Show denied devices\n"
+            MSG="${MSG}\`EXTEND [ID]\` - Extend guest timeout (+30m)\n"
+            MSG="${MSG}\`REVOKE [ID]\` - Revoke guest access\n"
+            MSG="${MSG}\`DEXTEND [ID]\` - Extend denial timeout (+30m)\n"
+            MSG="${MSG}\`DREVOKE [ID]\` - Remove from denied list\n\n"
+            MSG="${MSG}*System Control:*\n"
+            MSG="${MSG}\`ENABLE\` - Enable gatekeeper filtering\n"
+            MSG="${MSG}\`DISABLE\` - Disable gatekeeper (emergency)\n"
+            MSG="${MSG}\`SYNC\` - Resync static DHCP leases\n\n"
+            MSG="${MSG}*Maintenance:*\n"
+            MSG="${MSG}\`LOG\` - View recent activity logs\n"
+            MSG="${MSG}\`CLEAR\` - Clear logs and name cache\n"
+            MSG="${MSG}\`HELP\` - Show this help message\n\n"
+            MSG="${MSG}💡 _Use STATUS or DSTATUS first to get device IDs_"
+
+            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+
         # === STATUS COMMAND ===
         # Display gatekeeper status and list all active guests
         # Shows bypass status, device list with hostnames, and command hints
-        if [ "$CMD" = "STATUS" ]; then
+        elif [ "$CMD" = "STATUS" ]; then
             # Check global bypass status
             # If bypass_switch contains ff:ff:ff:ff:ff:ff, gatekeeper is disabled
             BYPASS=$(nft list set inet fw4 bypass_switch | grep -q "ff:ff:ff:ff:ff:ff" && echo "🔓 DISABLED" || echo "🛡️ ENABLED")
@@ -227,7 +259,6 @@ while true; do
             # Query both approved and denied MAC lists for active timeouts
             # Only shows entries with "expires" timestamp (active timeouts)
             RAW_LIST=$(nft list set inet fw4 approved_macs | grep "expires")
-            RAW_LIST+=$'\n'$(nft list set inet fw4 denied_macs | grep "expires")
 
             # Start building status message with bypass state
             MSG="🛡️ *Gatekeeper:* $BYPASS\n📋 *Active Guests:*\n"
@@ -275,10 +306,104 @@ EOF
             fi
 
             # Send status message with custom keyboard for quick commands
-            # Keyboard provides buttons for common commands (Status, Sync, Log, etc.)
+            # Keyboard provides buttons for common commands (Status, DStatus, Help, etc.)
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
-                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\",\"reply_markup\":{\"keyboard\":[[{\"text\":\"Status\"},{\"text\":\"Sync\"},{\"text\":\"Log\"}],[{\"text\":\"Enable\"},{\"text\":\"Disable\"},{\"text\":\"Clear\"}]],\"resize_keyboard\":true}}"
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\",\"reply_markup\":{\"keyboard\":[[{\"text\":\"Status\"},{\"text\":\"DStatus\"},{\"text\":\"Help\"}],[{\"text\":\"Sync\"},{\"text\":\"Log\"},{\"text\":\"Clear\"}],[{\"text\":\"Enable\"},{\"text\":\"Disable\"}]],\"resize_keyboard\":true}}"
+
+        # === DSTATUS COMMAND ===
+        # Display all denied MACs with hostnames and timeout information
+        # Shows devices that have been explicitly denied network access
+        elif [ "$CMD" = "DSTATUS" ]; then
+            # Query denied MAC list for active timeouts
+            # Only shows entries with "expires" timestamp (active denials)
+            DENIED_LIST=$(nft list set inet fw4 denied_macs | grep "expires")
+
+            # Start building denied devices message
+            MSG="🚫 *Denied Devices:*\n"
+
+            # Clear previous denied ID-to-MAC mapping (each DSTATUS creates fresh mapping)
+            rm -f "$DENIED_MAP_FILE"
+
+            # Handle empty denied list
+            if [ -z "$DENIED_LIST" ]; then
+                MSG="${MSG}_No devices currently denied_\n"
+            else
+                # Process each denied device and assign temporary numeric ID
+                count=1
+                while read -r line; do
+                    # Extract MAC address from nftables output using regex
+                    M_ADDR=$(echo "$line" | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
+
+                    # Extract timeout expiry from nftables output (e.g., "29m59s")
+                    M_TIME=$(echo "$line" | sed 's/.*expires //; s/s.*/s/; s/,//g')
+
+                    # Hostname resolution with priority fallback
+                    # 1. Custom Name Map (Cached during Approval)
+                    H_NAME=$(grep -i "$M_ADDR" "$NAME_MAP" | tail -n 1 | cut -d'=' -f2)
+
+                    # 2. DHCP Leases (Current network hostnames)
+                    [ -z "$H_NAME" ] && H_NAME=$(grep -i "$M_ADDR" /tmp/dhcp.leases | awk '{print $4}')
+
+                    # 3. Static UCI Config (Configured static lease hostnames)
+                    [ -z "$H_NAME" ] || [ "$H_NAME" = "*" ] && H_NAME=$(uci show dhcp | grep -i "$M_ADDR" | cut -d. -f2 | xargs -I {} uci -q get dhcp.{}.name)
+
+                    # 4. Fallback to "Unknown Device" if no hostname found
+                    [ -z "$H_NAME" ] && H_NAME="Unknown Device"
+
+                    # Store ID-to-MAC mapping for DEXTEND/DREVOKE commands
+                    echo "$count=$M_ADDR" >> "$DENIED_MAP_FILE"
+
+                    # Format denied device entry: count. Hostname, MAC address, and timeout
+                    MSG="${MSG}${count}. *${H_NAME}*\n   └ \`${M_ADDR}\` (${M_TIME})\n"
+                    count=$((count + 1))
+                done <<EOF
+$DENIED_LIST
+EOF
+                # Add usage hint for managing denied devices by ID
+                MSG="${MSG}\n💡 Reply \`Dextend ID\` or \`Drevoke ID\`"
+            fi
+
+            # Send denied devices message with markdown formatting
+            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+
+        # === DEXTEND COMMAND ===
+        # Extend denial timeout for a specific denied device
+        # Usage: "DEXTEND 1" - extends denial for device ID 1 by 30 minutes
+        elif [ "$CMD" = "DEXTEND" ] && [ -n "$ARG" ]; then
+            # Lookup MAC address from denied device ID mapping created by DSTATUS
+            TARGET_MAC=$(grep "^$ARG=" "$DENIED_MAP_FILE" | cut -d'=' -f2)
+
+            if [ -n "$TARGET_MAC" ]; then
+                # Re-add MAC to denied_macs with fresh 30-minute timeout
+                # nftables replaces existing entry, effectively resetting the timer
+                nft "add element inet fw4 denied_macs { $TARGET_MAC timeout 30m }"
+                MSG="⏳ Extended denial timeout for $TARGET_MAC"
+            else
+                # Invalid ID (not in current DSTATUS mapping or DSTATUS not run)
+                MSG="❌ Invalid ID. Run DSTATUS first to get denied device IDs."
+            fi
+            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
+
+        # === DREVOKE COMMAND ===
+        # Remove device from denied list (allows it to request access immediately)
+        # Usage: "DREVOKE 1" - removes device ID 1 from denied list
+        elif [ "$CMD" = "DREVOKE" ] && [ -n "$ARG" ]; then
+            # Lookup MAC address from denied device ID mapping created by DSTATUS
+            TARGET_MAC=$(grep "^$ARG=" "$DENIED_MAP_FILE" | cut -d'=' -f2)
+
+            if [ -n "$TARGET_MAC" ]; then
+                # Remove MAC from denied_macs set (device can request access again)
+                # Next DHCP connection will trigger new approval notification
+                nft "delete element inet fw4 denied_macs { $TARGET_MAC }"
+                MSG="✅ Removed $TARGET_MAC from denied list"
+            else
+                # Invalid ID (not in current DSTATUS mapping or DSTATUS not run)
+                MSG="❌ Invalid ID. Run DSTATUS first to get denied device IDs."
+            fi
+            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
 
         # === EXTEND COMMAND ===
         # Extend network access timeout for a specific guest
