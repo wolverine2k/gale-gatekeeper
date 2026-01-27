@@ -51,7 +51,7 @@
 # - EXTEND [ID]: Extend network access timeout for a specific guest (30 min)
 # - REVOKE [ID]: Immediately revoke network access for a specific guest
 # - DEXTEND [ID]: Extend denial timeout for a specific denied device (30 min)
-# - DREVOKE [ID]: Remove device from denied list (allows new access request)
+# - DREVOKE [ID]: Remove device from denied list and approve for 30 minutes
 # - LOG: Display last 10 entries from activity log
 # - SYNC: Manually resynchronize static DHCP leases from UCI to firewall
 # - ENABLE: Re-enable gatekeeper (clear bypass switch)
@@ -233,7 +233,7 @@ while true; do
             MSG="${MSG}\`EXTEND [ID]\` - Extend guest timeout (+30m)\n"
             MSG="${MSG}\`REVOKE [ID]\` - Revoke guest access\n"
             MSG="${MSG}\`DEXTEND [ID]\` - Extend denial timeout (+30m)\n"
-            MSG="${MSG}\`DREVOKE [ID]\` - Remove from denied list\n\n"
+            MSG="${MSG}\`DREVOKE [ID]\` - Approve denied device (+30m)\n\n"
             MSG="${MSG}*System Control:*\n"
             MSG="${MSG}\`ENABLE\` - Enable gatekeeper filtering\n"
             MSG="${MSG}\`DISABLE\` - Disable gatekeeper (emergency)\n"
@@ -388,17 +388,20 @@ EOF
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
 
         # === DREVOKE COMMAND ===
-        # Remove device from denied list (allows it to request access immediately)
-        # Usage: "DREVOKE 1" - removes device ID 1 from denied list
+        # Remove device from denied list and automatically approve for 30 minutes
+        # Usage: "DREVOKE 1" - removes device ID 1 from denied list and grants network access
         elif [ "$CMD" = "DREVOKE" ] && [ -n "$ARG" ]; then
             # Lookup MAC address from denied device ID mapping created by DSTATUS
             TARGET_MAC=$(grep "^$ARG=" "$DENIED_MAP_FILE" | cut -d'=' -f2)
 
             if [ -n "$TARGET_MAC" ]; then
-                # Remove MAC from denied_macs set (device can request access again)
-                # Next DHCP connection will trigger new approval notification
-                nft "delete element inet fw4 denied_macs { $TARGET_MAC }"
-                MSG="✅ Removed $TARGET_MAC from denied list"
+                # Remove MAC from denied_macs set
+                nft "delete element inet fw4 denied_macs { $TARGET_MAC }" 2>/dev/null
+
+                # Automatically approve device for 30 minutes
+                nft "add element inet fw4 approved_macs { $TARGET_MAC timeout 30m }"
+
+                MSG="✅ Removed $TARGET_MAC from denied list and approved for 30 minutes"
             else
                 # Invalid ID (not in current DSTATUS mapping or DSTATUS not run)
                 MSG="❌ Invalid ID. Run DSTATUS first to get denied device IDs."
