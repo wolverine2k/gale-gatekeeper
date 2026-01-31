@@ -80,6 +80,16 @@ ubus monitor | while read -r line; do
             # 2. Validation: MAC is required for all gatekeeper operations
             [ -z "$MAC" ] && continue
 
+            # 2.5. IPv6 Filtering: Only process IPv4 DHCP requests
+            # IPv6 addresses contain colons (e.g., fe80::1), IPv4 contain dots (e.g., 192.168.1.1)
+            # Skip IPv6 requests to avoid notification spam and focus on IPv4 network access
+            case "$IP" in
+                *:*)
+                    logger -t "DNS_LISTENER" "Skipping IPv6 request for $MAC ($HOST) at $IP"
+                    continue
+                    ;;
+            esac
+
             # 3. Lock/Rate Limit Logic: Prevent duplicate triggers within 60 seconds
             MAC_CLEAN=$(echo "$MAC" | tr -d ':')  # Remove colons for filename safety
             LOCK_FILE="$LOCK_DIR/$MAC_CLEAN"

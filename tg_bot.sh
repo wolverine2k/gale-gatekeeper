@@ -377,10 +377,41 @@ EOF
             TARGET_MAC=$(grep "^$ARG=" "$DENIED_MAP_FILE" | cut -d'=' -f2)
 
             if [ -n "$TARGET_MAC" ]; then
-                # Re-add MAC to denied_macs with fresh 30-minute timeout
-                # nftables replaces existing entry, effectively resetting the timer
-                nft "add element inet fw4 denied_macs { $TARGET_MAC timeout 30m }"
-                MSG="⏳ Extended denial timeout for $TARGET_MAC"
+                # Get current remaining time from nftables
+                CURRENT_LINE=$(nft list set inet fw4 denied_macs | grep "$TARGET_MAC" | grep "expires")
+
+                if [ -n "$CURRENT_LINE" ]; then
+                    # Parse remaining time (format: "29m59s", "15m30s", or "59s")
+                    TIME_STR=$(echo "$CURRENT_LINE" | sed 's/.*expires //; s/s.*/s/; s/,//g')
+
+                    # Convert to total seconds by parsing hours, minutes, and seconds
+                    HOURS=0
+                    MINUTES=0
+                    SECONDS=0
+
+                    # Extract hours if present (format: Xh)
+                    [ -n "$(echo "$TIME_STR" | grep 'h')" ] && HOURS=$(echo "$TIME_STR" | sed 's/h.*//; s/.*[^0-9]//')
+
+                    # Extract minutes if present (format: Xm)
+                    [ -n "$(echo "$TIME_STR" | grep 'm')" ] && MINUTES=$(echo "$TIME_STR" | sed 's/m.*//; s/.*h//; s/[^0-9]//g')
+
+                    # Extract seconds (format: Xs)
+                    SECONDS=$(echo "$TIME_STR" | sed 's/s.*//; s/.*m//; s/.*h//; s/[^0-9]//g')
+                    [ -z "$SECONDS" ] && SECONDS=0
+
+                    # Calculate current remaining time in seconds
+                    CURRENT_SECONDS=$((HOURS * 3600 + MINUTES * 60 + SECONDS))
+
+                    # Calculate new timeout (current + 30 minutes = current + 1800 seconds)
+                    TOTAL_SECONDS=$((CURRENT_SECONDS + 1800))
+
+                    # Re-add MAC with extended timeout
+                    nft "add element inet fw4 denied_macs { $TARGET_MAC timeout ${TOTAL_SECONDS}s }"
+                    MSG="⏳ Extended denial timeout for $TARGET_MAC (+30m, now ${TOTAL_SECONDS}s total)"
+                else
+                    # MAC not found or already expired
+                    MSG="❌ Device not found in denied list or already expired."
+                fi
             else
                 # Invalid ID (not in current DSTATUS mapping or DSTATUS not run)
                 MSG="❌ Invalid ID. Run DSTATUS first to get denied device IDs."
@@ -414,12 +445,43 @@ EOF
         elif [ "$CMD" = "EXTEND" ] && [ -n "$ARG" ]; then
             # Lookup MAC address from temporary ID mapping created by STATUS
             TARGET_MAC=$(grep "^$ARG=" "$MAP_FILE" | cut -d'=' -f2)
-            
+
             if [ -n "$TARGET_MAC" ]; then
-                # Re-add MAC to approved_macs with fresh 30-minute timeout
-                # nftables replaces existing entry, effectively resetting the timer
-                nft "add element inet fw4 approved_macs { $TARGET_MAC timeout 30m }"
-                MSG="⏳ Extended access for $TARGET_MAC"
+                # Get current remaining time from nftables
+                CURRENT_LINE=$(nft list set inet fw4 approved_macs | grep "$TARGET_MAC" | grep "expires")
+
+                if [ -n "$CURRENT_LINE" ]; then
+                    # Parse remaining time (format: "29m59s", "15m30s", or "59s")
+                    TIME_STR=$(echo "$CURRENT_LINE" | sed 's/.*expires //; s/s.*/s/; s/,//g')
+
+                    # Convert to total seconds by parsing hours, minutes, and seconds
+                    HOURS=0
+                    MINUTES=0
+                    SECONDS=0
+
+                    # Extract hours if present (format: Xh)
+                    [ -n "$(echo "$TIME_STR" | grep 'h')" ] && HOURS=$(echo "$TIME_STR" | sed 's/h.*//; s/.*[^0-9]//')
+
+                    # Extract minutes if present (format: Xm)
+                    [ -n "$(echo "$TIME_STR" | grep 'm')" ] && MINUTES=$(echo "$TIME_STR" | sed 's/m.*//; s/.*h//; s/[^0-9]//g')
+
+                    # Extract seconds (format: Xs)
+                    SECONDS=$(echo "$TIME_STR" | sed 's/s.*//; s/.*m//; s/.*h//; s/[^0-9]//g')
+                    [ -z "$SECONDS" ] && SECONDS=0
+
+                    # Calculate current remaining time in seconds
+                    CURRENT_SECONDS=$((HOURS * 3600 + MINUTES * 60 + SECONDS))
+
+                    # Calculate new timeout (current + 30 minutes = current + 1800 seconds)
+                    TOTAL_SECONDS=$((CURRENT_SECONDS + 1800))
+
+                    # Re-add MAC with extended timeout
+                    nft "add element inet fw4 approved_macs { $TARGET_MAC timeout ${TOTAL_SECONDS}s }"
+                    MSG="⏳ Extended access for $TARGET_MAC (+30m, now ${TOTAL_SECONDS}s total)"
+                else
+                    # MAC not found or already expired
+                    MSG="❌ Device not found in approved list or already expired."
+                fi
             else
                 # Invalid ID (not in current STATUS mapping or STATUS not run)
                 MSG="❌ Invalid ID."
