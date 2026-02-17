@@ -1,0 +1,15 @@
+config gatekeeper 'main'
+        option token '8373692823:AAHeYoTNe3jSZ20MyMte6aAjwTEMdJfWauk'
+        option chat_id '1393103961'
+
+
+uci set gatekeeper.main.token='8373692823:AAHeYoTNe3jSZ20MyMte6aAjwTEMdJfWauk'
+
+# Configure Telegram Chat ID (send message to @userinfobot to get your ID)
+uci set gatekeeper.main.chat_id='1393103961'
+
+# Save configuration
+uci commit gatekeeper
+
+# Restart services to apply
+/etc/init.d/tg_gatekeeper restart

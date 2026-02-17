@@ -18,12 +18,13 @@ The system operates as a 4-stage event pipeline:
 
 ### Firewall Integration (nftables)
 
-The firewall logic is defined in `gatekeeper.nft` and uses four nftables sets:
+The firewall logic is defined in `gatekeeper.nft` and uses five nftables sets:
 
 - **static_macs**: Permanent whitelist from UCI static DHCP leases (no timeout)
-- **approved_macs**: Temporary approved guests (30 minute timeout)
+- **approved_macs**: Temporary approved guests (30 minute timeout, or 24 hours in blacklist mode)
 - **denied_macs**: Explicitly denied devices (30 minute timeout to allow retry)
 - **bypass_switch**: Emergency global bypass (MAC ff:ff:ff:ff:ff:ff activates it)
+- **blacklist_macs**: MACs requiring approval when blacklist mode is ON (no timeout)
 
 Rule evaluation order (priority -10, runs before default filter):
 1. Emergency bypass (if bypass_switch contains ff:ff:ff:ff:ff:ff)
@@ -49,30 +50,66 @@ When displaying devices, the bot uses this lookup order:
 3. Static UCI config - hostname from UCI DHCP configuration
 4. Fallback: "Guest"
 
+### Blacklist Mode
+
+Blacklist mode inverts the approval logic for more convenient management of trusted networks:
+
+**Normal Mode (blacklist_mode = 0, default):**
+- All new devices require approval via Telegram
+- Static DHCP leases bypass checks
+
+**Blacklist Mode (blacklist_mode = 1):**
+- Only MACs in the `blacklist_macs` set require approval
+- All other MACs are auto-approved with 24-hour timeout
+- Auto-approved devices trigger an informational Telegram message (not approval request)
+- Static DHCP leases still bypass all checks
+
+**Use cases:**
+- Home networks where most devices are trusted
+- Guest networks with a few restricted devices
+- Simplified management when you have more trusted than untrusted devices
+
+**Configuration:**
+- State stored in UCI: `gatekeeper.main.blacklist_mode` (0 or 1)
+- Blacklist MACs stored in UCI: `gatekeeper.blacklist.mac` (list)
+- Both persist across reboots
+
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `gatekeeper.nft` | Firewall rules and nftables set definitions |
-| `gatekeeper.sh` | Main approval handler - sends Telegram notifications, implements auto-deny |
-| `tg_bot.sh` | Interactive bot daemon - handles commands and callbacks |
+| `gatekeeper.nft` | Firewall rules and nftables set definitions (5 sets) |
+| `gatekeeper.sh` | Main approval handler - sends Telegram notifications, implements auto-deny, handles blacklist mode |
+| `tg_bot.sh` | Interactive bot daemon - handles commands and callbacks, including blacklist commands |
 | `dnsmasq_trigger.sh` | Minimal DHCP event bridge to ubus |
 | `gatekeeper_trigger.sh` | Ubus event listener with rate limiting |
-| `gatekeeper_init` | Init script for static MAC sync at boot |
+| `gatekeeper_init` | Init script for static and blacklist MAC sync at boot |
 | `tg_gatekeeper` | Init script for bot daemon (procd-managed) |
 | `gatekeeper_trigger_listener` | Init script for ubus listener daemon |
-| `gatekeeper_sync.sh` | Manual static MAC sync utility |
+| `gatekeeper_sync.sh` | Manual MAC sync utility (supports static and blacklist) |
 
 ## Telegram Bot Commands
 
 Interactive commands (text-based):
+
+**Device Management:**
 - **HELP**: Display list of all available commands with descriptions
 - **STATUS**: Show gatekeeper status and active guests with IDs
 - **DSTATUS**: Show all denied devices with hostnames and timeout information
-- **EXTEND ID**: Extend timeout for approved guest by ID
+- **EXTEND ID**: Extend timeout for approved guest by ID (30 min)
 - **REVOKE ID**: Immediately revoke network access
 - **DEXTEND ID**: Extend denial timeout for denied device by ID (30 min)
 - **DREVOKE ID**: Remove device from denied list (allows new access request)
+
+**Blacklist Mode:**
+- **BL_ON** / **BLACKLIST_ON**: Enable blacklist mode (only blacklisted MACs require approval)
+- **BL_OFF** / **BLACKLIST_OFF**: Disable blacklist mode (return to normal mode)
+- **BL_STATUS** / **BLACKLIST_STATUS**: Show blacklist mode status and list all blacklisted MACs
+- **BL_ADD MAC** / **BLACKLIST_ADD MAC**: Add MAC to blacklist (e.g., `BL_ADD aa:bb:cc:dd:ee:ff`)
+- **BL_REMOVE MAC** / **BLACKLIST_REMOVE MAC**: Remove MAC from blacklist
+- **BL_CLEAR** / **BLACKLIST_CLEAR**: Clear all MACs from blacklist
+
+**System Control:**
 - **LOG**: Display recent activity logs
 - **SYNC**: Manually resync static DHCP MACs from UCI config
 - **ENABLE**: Re-enable gatekeeper (clear bypass switch)
@@ -80,7 +117,7 @@ Interactive commands (text-based):
 - **CLEAR**: Clear logs and hostname cache
 
 Callback handlers (inline buttons):
-- **approve_MAC**: Add MAC to approved_macs (30 min timeout)
+- **approve_MAC**: Add MAC to approved_macs (30 min timeout, or 24h in blacklist mode)
 - **deny_MAC**: Add MAC to denied_macs (30 min timeout)
 
 ## Development Environment
@@ -107,6 +144,10 @@ uci set gatekeeper.main.token='YOUR_TELEGRAM_BOT_TOKEN_HERE'
 # Configure Telegram Chat ID (send message to @userinfobot to get your ID)
 uci set gatekeeper.main.chat_id='YOUR_CHAT_ID_HERE'
 
+# Optional: Enable blacklist mode (default is 0 = OFF)
+# When enabled, only MACs in blacklist require approval
+# uci set gatekeeper.main.blacklist_mode='1'
+
 # Save configuration
 uci commit gatekeeper
 
@@ -115,6 +156,11 @@ uci commit gatekeeper
 ```
 
 The configuration is stored in `/etc/config/gatekeeper` and is read by both `gatekeeper.sh` and `tg_bot.sh` via UCI or environment variables (`GATEKEEPER_TOKEN` and `GATEKEEPER_CHAT_ID`).
+
+**Blacklist mode configuration:**
+- `gatekeeper.main.blacklist_mode`: 0 (OFF, default) or 1 (ON)
+- `gatekeeper.blacklist.mac`: List of MAC addresses requiring approval when blacklist mode is ON
+- Manage via Telegram bot commands: `BL_ON`, `BL_OFF`, `BL_ADD`, `BL_REMOVE`, `BL_STATUS`
 
 ### Testing and Debugging
 

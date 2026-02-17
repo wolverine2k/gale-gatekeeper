@@ -37,9 +37,22 @@ config gatekeeper 'main'
 	# Obtain from BotFather: https://t.me/botfather
 	# Example: option token '1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ'
 	option token 'YOUR_TELEGRAM_BOT_TOKEN_HERE'
-	
-	# Telegram Chat ID for notifications (required)  
+
+	# Telegram Chat ID for notifications (required)
 	# Use this command to find your chat ID: https://api.telegram.org/bot<TOKEN>/getUpdates
 	# Or send a message to @userinfobot
 	# Example: option chat_id '123456789'
 	option chat_id 'YOUR_CHAT_ID_HERE'
+
+	# Blacklist Mode (optional, default: 0)
+	# 0 = OFF (all devices require approval - normal mode)
+	# 1 = ON (only blacklisted MACs require approval, others auto-approved for 24h)
+	option blacklist_mode '0'
+
+# Blacklist MAC addresses
+# When blacklist mode is ON, only these MACs will require approval
+# All other MACs will be auto-approved with 24-hour timeout
+# Add MACs via Telegram bot: BL_ADD aa:bb:cc:dd:ee:ff
+config blacklist 'blacklist'
+	# list mac 'aa:bb:cc:dd:ee:ff'
+	# list mac '11:22:33:44:55:66'

@@ -234,6 +234,13 @@ while true; do
             MSG="${MSG}\`REVOKE [ID]\` - Revoke guest access\n"
             MSG="${MSG}\`DEXTEND [ID]\` - Extend denial timeout (+30m)\n"
             MSG="${MSG}\`DREVOKE [ID]\` - Approve denied device (+30m)\n\n"
+            MSG="${MSG}*Blacklist Mode:*\n"
+            MSG="${MSG}\`BL_ON\` - Enable blacklist mode\n"
+            MSG="${MSG}\`BL_OFF\` - Disable blacklist mode\n"
+            MSG="${MSG}\`BL_STATUS\` - Show blacklist status\n"
+            MSG="${MSG}\`BL_ADD [MAC]\` - Add MAC to blacklist\n"
+            MSG="${MSG}\`BL_REMOVE [MAC]\` - Remove from blacklist\n"
+            MSG="${MSG}\`BL_CLEAR\` - Clear all blacklist entries\n\n"
             MSG="${MSG}*System Control:*\n"
             MSG="${MSG}\`ENABLE\` - Enable gatekeeper filtering\n"
             MSG="${MSG}\`DISABLE\` - Disable gatekeeper (emergency)\n"
@@ -309,7 +316,7 @@ EOF
             # Keyboard provides buttons for common commands (Status, DStatus, Help, etc.)
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
-                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\",\"reply_markup\":{\"keyboard\":[[{\"text\":\"Status\"},{\"text\":\"DStatus\"},{\"text\":\"Help\"}],[{\"text\":\"Sync\"},{\"text\":\"Log\"},{\"text\":\"Clear\"}],[{\"text\":\"Enable\"},{\"text\":\"Disable\"}]],\"resize_keyboard\":true}}"
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\",\"reply_markup\":{\"keyboard\":[[{\"text\":\"Status\"},{\"text\":\"DStatus\"},{\"text\":\"Help\"}],[{\"text\":\"Sync\"},{\"text\":\"Enable\"},{\"text\":\"Disable\"}]],\"resize_keyboard\":true}}"
 
         # === DSTATUS COMMAND ===
         # Display all denied MACs with hostnames and timeout information
@@ -561,6 +568,137 @@ EOF
             > "$LOG_FILE"
             > "$NAME_MAP"
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=🗑️ Logs and name cache cleared."
+
+        # === BLACKLIST MODE ON ===
+        # Enable blacklist mode - only MACs in blacklist require approval
+        # All other MACs are auto-approved with 24-hour timeout
+        elif [ "$CMD" = "BL_ON" ] || [ "$CMD" = "BLACKLIST_ON" ]; then
+            # Set blacklist mode to enabled in UCI config
+            uci set gatekeeper.main.blacklist_mode='1'
+            uci commit gatekeeper
+
+            # Sync blacklist to nftables (in case it's not synced yet)
+            nft flush set inet fw4 blacklist_macs 2>/dev/null
+            BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep "\.mac=" | cut -d"'" -f2)
+            for mac in $BLACKLIST_MACS; do
+                [ -z "$mac" ] && continue
+                nft add element inet fw4 blacklist_macs { $mac } 2>/dev/null
+            done
+
+            MSG="✅ *Blacklist Mode: ENABLED*\n\n"
+            MSG="${MSG}Only devices in the blacklist will require approval.\n"
+            MSG="${MSG}All other devices will be auto-approved for 24 hours."
+            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+
+        # === BLACKLIST MODE OFF ===
+        # Disable blacklist mode - return to normal behavior (all require approval)
+        elif [ "$CMD" = "BL_OFF" ] || [ "$CMD" = "BLACKLIST_OFF" ]; then
+            # Set blacklist mode to disabled in UCI config
+            uci set gatekeeper.main.blacklist_mode='0'
+            uci commit gatekeeper
+
+            MSG="✅ *Blacklist Mode: DISABLED*\n\n"
+            MSG="${MSG}All devices will require approval (normal mode)."
+            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+
+        # === BLACKLIST STATUS ===
+        # Show blacklist mode status and list all blacklisted MACs
+        elif [ "$CMD" = "BL_STATUS" ] || [ "$CMD" = "BLACKLIST_STATUS" ]; then
+            # Get blacklist mode status from UCI config
+            MODE=$(uci -q get gatekeeper.main.blacklist_mode || echo "0")
+            if [ "$MODE" = "1" ]; then
+                STATUS="ENABLED ✅"
+            else
+                STATUS="DISABLED ❌"
+            fi
+
+            MSG="📋 *Blacklist Status*\n\n"
+            MSG="${MSG}*Mode:* ${STATUS}\n\n"
+            MSG="${MSG}*Blacklisted MACs:*\n"
+
+            # Get blacklist from UCI config
+            BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep "\.mac=" | cut -d"'" -f2)
+            if [ -z "$BLACKLIST_MACS" ]; then
+                MSG="${MSG}_(none)_\n"
+            else
+                count=1
+                for mac in $BLACKLIST_MACS; do
+                    [ -z "$mac" ] && continue
+                    MSG="${MSG}${count}. \`${mac}\`\n"
+                    count=$((count + 1))
+                done
+            fi
+
+            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+
+        # === BLACKLIST ADD ===
+        # Add a MAC address to the blacklist
+        # Usage: "BL_ADD aa:bb:cc:dd:ee:ff"
+        elif [ "$CMD" = "BL_ADD" ] || [ "$CMD" = "BLACKLIST_ADD" ]; then
+            if [ -z "$ARG" ]; then
+                MSG="❌ Usage: BL_ADD <MAC>\nExample: BL_ADD aa:bb:cc:dd:ee:ff"
+            else
+                # Convert MAC to lowercase for consistency
+                ADD_MAC=$(echo "$ARG" | tr '[:upper:]' '[:lower:]')
+
+                # Validate MAC format (basic check)
+                if echo "$ADD_MAC" | grep -qE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'; then
+                    # Check if blacklist section exists, create if not
+                    if ! uci -q get gatekeeper.blacklist >/dev/null 2>&1; then
+                        uci set gatekeeper.blacklist=blacklist
+                    fi
+
+                    # Add to UCI blacklist
+                    uci add_list gatekeeper.blacklist.mac="$ADD_MAC"
+                    uci commit gatekeeper
+
+                    # Add to nftables set
+                    nft add element inet fw4 blacklist_macs { $ADD_MAC } 2>/dev/null
+
+                    MSG="✅ Added to blacklist: \`${ADD_MAC}\`"
+                    logger -t tg_bot "Added $ADD_MAC to blacklist"
+                else
+                    MSG="❌ Invalid MAC format. Use: aa:bb:cc:dd:ee:ff"
+                fi
+            fi
+            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+
+        # === BLACKLIST REMOVE ===
+        # Remove a MAC address from the blacklist
+        # Usage: "BL_REMOVE aa:bb:cc:dd:ee:ff"
+        elif [ "$CMD" = "BL_REMOVE" ] || [ "$CMD" = "BLACKLIST_REMOVE" ]; then
+            if [ -z "$ARG" ]; then
+                MSG="❌ Usage: BL_REMOVE <MAC>\nExample: BL_REMOVE aa:bb:cc:dd:ee:ff"
+            else
+                # Convert MAC to lowercase for consistency
+                REMOVE_MAC=$(echo "$ARG" | tr '[:upper:]' '[:lower:]')
+
+                # Remove from UCI blacklist
+                uci del_list gatekeeper.blacklist.mac="$REMOVE_MAC" 2>/dev/null
+                uci commit gatekeeper
+
+                # Remove from nftables set (ignore errors if not present)
+                nft delete element inet fw4 blacklist_macs { $REMOVE_MAC } 2>/dev/null
+
+                MSG="✅ Removed from blacklist: \`${REMOVE_MAC}\`"
+                logger -t tg_bot "Removed $REMOVE_MAC from blacklist"
+            fi
+            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+
+        # === BLACKLIST CLEAR ===
+        # Clear all MACs from the blacklist
+        elif [ "$CMD" = "BL_CLEAR" ] || [ "$CMD" = "BLACKLIST_CLEAR" ]; then
+            # Delete and recreate blacklist section in UCI
+            uci delete gatekeeper.blacklist 2>/dev/null
+            uci set gatekeeper.blacklist=blacklist
+            uci commit gatekeeper
+
+            # Clear nftables blacklist set
+            nft flush set inet fw4 blacklist_macs 2>/dev/null
+
+            MSG="✅ Blacklist cleared - all MACs removed"
+            logger -t tg_bot "Blacklist cleared"
+            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
         fi
     done
     

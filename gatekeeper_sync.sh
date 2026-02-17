@@ -22,19 +22,21 @@
 # SOFTWARE.
 #
 
-# gatekeeper_sync.sh - Manual synchronization utility for static DHCP MAC addresses
+# gatekeeper_sync.sh - Manual synchronization utility for MAC address lists
 #
-# This script provides manual synchronization of static MAC addresses from 
-# OpenWrt's UCI DHCP configuration to the gatekeeper firewall rules. It's designed
-# to be called interactively or via the Telegram bot's SYNC command.
+# This script provides manual synchronization of MAC addresses from UCI configuration
+# to gatekeeper firewall nftables sets. Supports both static DHCP leases and blacklist MACs.
 #
-# Key Differences from gatekeeper_init:
+# Usage:
+#   gatekeeper_sync.sh          - Sync both static and blacklist MACs (default)
+#   gatekeeper_sync.sh static   - Sync only static DHCP MACs
+#   gatekeeper_sync.sh blacklist - Sync only blacklist MACs
+#
+# Key Features:
 # - Can be run manually at any time (not just boot)
-# - Uses proper UCI array iteration (@host[$INDEX]) for robust parsing
+# - Uses proper UCI array iteration for robust parsing
 # - Provides user feedback about number of synchronized addresses
 # - Maintains firewall rules without disrupting active connections
-#
-# Usage: Run directly as /usr/bin/gatekeeper_sync.sh or via Telegram bot
 #
 # Technical Implementation:
 # - Uses UCI's array syntax (@host[0], @host[1], etc.) to iterate DHCP hosts
@@ -52,29 +54,55 @@
 # - For bulk operations, consider implementing backup/restore functionality
 # - To support dynamic hostname updates, add name synchronization logic
 
-# Step 1: Flush the existing set to avoid duplicates or orphaned entries
-# This ensures a clean slate by removing all current static MAC entries
-nft flush set inet fw4 static_macs
+# Parse command line argument to determine what to sync
+SYNC_MODE="${1:-all}"  # Default to "all" if no argument provided
 
-# Step 2: Correctly iterate through UCI dhcp host sections to find MAC addresses
-# Uses array-index based iteration for reliable parsing across UCI versions
-INDEX=0
-while true; do
-    # Query UCI for MAC address at current array index
-    # -q flag suppresses errors for missing entries
-    MAC=$(uci -q get dhcp.@host[$INDEX].mac)
-    
-    # No more host entries? Exit loop
-    [ -z "$MAC" ] && break
+# === SYNC STATIC DHCP MACS ===
+# Synchronize static DHCP lease MACs from UCI to nftables
+if [ "$SYNC_MODE" = "static" ] || [ "$SYNC_MODE" = "all" ]; then
+    # Flush the existing set to avoid duplicates or orphaned entries
+    nft flush set inet fw4 static_macs
 
-    # Add each MAC found to the nftables set
-    # Handles both single MACs and space-separated multiple MACs
-    nft add element inet fw4 static_macs { "$MAC" }
-    
-    # Increment counter for next iteration
-    INDEX=$((INDEX + 1))
-done
+    # Iterate through UCI dhcp host sections to find MAC addresses
+    # Uses array-index based iteration for reliable parsing
+    INDEX=0
+    while true; do
+        # Query UCI for MAC address at current array index
+        MAC=$(uci -q get dhcp.@host[$INDEX].mac)
 
-# Provide user feedback about synchronization result
-# Count includes all MACs processed (even if some were empty)
-echo "Successfully synchronized $INDEX static MAC addresses."
+        # No more host entries? Exit loop
+        [ -z "$MAC" ] && break
+
+        # Add each MAC found to the nftables set
+        nft add element inet fw4 static_macs { "$MAC" }
+
+        INDEX=$((INDEX + 1))
+    done
+
+    echo "Successfully synchronized $INDEX static MAC addresses."
+    logger -t gatekeeper_sync "Synced $INDEX static MACs"
+fi
+
+# === SYNC BLACKLIST MACS ===
+# Synchronize blacklist MACs from UCI to nftables
+if [ "$SYNC_MODE" = "blacklist" ] || [ "$SYNC_MODE" = "all" ]; then
+    # Flush the existing blacklist set
+    nft flush set inet fw4 blacklist_macs 2>/dev/null
+
+    # Get all blacklist MACs from UCI config
+    # Format: gatekeeper.blacklist.mac='aa:bb:cc:dd:ee:ff'
+    BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep "\.mac=" | cut -d"'" -f2)
+
+    COUNT=0
+    for mac in $BLACKLIST_MACS; do
+        # Skip empty entries
+        [ -z "$mac" ] && continue
+
+        # Add MAC to nftables blacklist set
+        nft add element inet fw4 blacklist_macs { "$mac" } 2>/dev/null
+        COUNT=$((COUNT + 1))
+    done
+
+    echo "Successfully synchronized $COUNT blacklist MAC addresses."
+    logger -t gatekeeper_sync "Synced $COUNT blacklist MACs"
+fi

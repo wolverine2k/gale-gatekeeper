@@ -22,17 +22,18 @@
 # SOFTWARE.
 #
 
-# gatekeeper_init - OpenWrt init script for gatekeeper static MAC synchronization
-# 
+# gatekeeper_init - OpenWrt init script for gatekeeper MAC synchronization
+#
 # This script runs at system startup (START=95) to initialize the gatekeeper
-# firewall rules by populating the static_macs nftables set with MAC addresses
-# configured as static DHCP leases in OpenWrt's UCI configuration.
+# firewall rules by populating nftables sets with MAC addresses from UCI configuration.
+# Syncs both static DHCP leases and blacklist MACs.
 #
 # Key Features:
 # - Runs during late boot phase to ensure network services are ready
-# - Clears existing static_macs set before repopulating (prevents stale entries)
+# - Clears existing sets before repopulating (prevents stale entries)
 # - Parses UCI DHCP configuration to extract static MAC assignments
-# - Adds each static MAC to the nftables firewall set for immediate access
+# - Parses UCI gatekeeper configuration to extract blacklist MACs
+# - Adds each MAC to the appropriate nftables firewall set for access control
 #
 # Integration Points:
 # - Works with OpenWrt's procd init system
@@ -54,18 +55,32 @@ START=95  # Late boot position (90-99 range for network-related services)
 
 # Main service start function called by procd
 start() {
+    # === SYNC STATIC DHCP MACS ===
     # Step 1: Clear the static MAC set to prevent accumulation of stale entries
-    # This ensures we start fresh on each boot or service restart
     nft flush set inet fw4 static_macs
 
     # Step 2: Extract static MAC addresses from UCI DHCP configuration
-    # Searches for all .mac= entries and extracts the MAC values
-    # Format: uci show dhcp returns key='value' pairs, we extract the value part
     STATIC_MACS=$(uci show dhcp | grep ".mac=" | awk -F"='" '{print $2}' | tr -d "'")
 
     # Step 3: Iterate through each static MAC and add to firewall set
-    # This grants immediate network access to devices with static leases
     for mac in $STATIC_MACS; do
         nft add element inet fw4 static_macs { $mac }
     done
+
+    logger -t gatekeeper_init "Static MACs synchronized"
+
+    # === SYNC BLACKLIST MACS ===
+    # Step 4: Clear the blacklist MAC set
+    nft flush set inet fw4 blacklist_macs 2>/dev/null
+
+    # Step 5: Extract blacklist MAC addresses from UCI gatekeeper configuration
+    BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep "\.mac=" | cut -d"'" -f2)
+
+    # Step 6: Iterate through each blacklist MAC and add to firewall set
+    for mac in $BLACKLIST_MACS; do
+        [ -z "$mac" ] && continue
+        nft add element inet fw4 blacklist_macs { $mac } 2>/dev/null
+    done
+
+    logger -t gatekeeper_init "Blacklist MACs synchronized"
 }

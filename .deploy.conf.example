@@ -1,0 +1,14 @@
+# Gatekeeper Deployment Configuration
+# Copy this file to .deploy.conf and customize for your environment
+
+# Router address (IP or hostname)
+ROUTER_ADDRESS="192.168.1.1"
+
+# SSH user (usually 'root' for OpenWrt)
+SSH_USER="root"
+
+# SSH key path (optional, leave empty to use default or password auth)
+SSH_KEY=""
+
+# Restart services after deployment (true/false)
+RESTART_SERVICES=true

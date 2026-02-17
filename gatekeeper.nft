@@ -29,11 +29,12 @@
 # gatekeeper access control system.
 #
 # Firewall Architecture:
-# The system uses four nftables sets to manage network access:
+# The system uses five nftables sets to manage network access:
 # - static_macs: Permanent whitelist (static DHCP leases) - no timeout
 # - approved_macs: Temporary approved guests - enforced timeout (30min default)
 # - denied_macs: Devices marked as denied - timeout-based blocking
 # - bypass_switch: Emergency global bypass - ff:ff:ff:ff:ff:ff activates it
+# - blacklist_macs: MACs requiring approval when blacklist mode is ON - no timeout
 #
 # Rule Processing Order (Priority -10 means runs before default filter):
 # 1. Emergency Bypass: Global off switch for emergencies (sets evaluated top-to-bottom)
@@ -84,6 +85,9 @@ add set inet fw4 static_macs { type ether_addr; }
 
 # bypass_switch: Emergency off-switch set (non-timeout for stability)
 add set inet fw4 bypass_switch { type ether_addr; }
+
+# blacklist_macs: MACs that require approval when blacklist mode is ON (permanent list)
+add set inet fw4 blacklist_macs { type ether_addr; }
 
 # 2. Ensure the chain exists and is hooked into the forward flow
 # Priority -10: High priority to run before default filters

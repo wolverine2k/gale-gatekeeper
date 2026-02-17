@@ -119,6 +119,35 @@ if [[ -z "${MAC// }" ]]; then
     exit 0  # Invalid input, nothing to process
 fi
 
+# Step 3.5: Check Blacklist Mode
+# When blacklist mode is enabled, only MACs in the blacklist require approval
+# All other MACs are auto-approved with 24-hour timeout
+BLACKLIST_MODE=$(uci -q get gatekeeper.main.blacklist_mode || echo "0")
+
+if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ] && [ "$BLACKLIST_MODE" = "1" ]; then
+    # Blacklist mode is ON - check if MAC is in blacklist
+    if ! nft list set inet fw4 blacklist_macs | grep -qi "$MAC"; then
+        # MAC is NOT in blacklist - auto-approve with 24h timeout
+        nft add element inet fw4 approved_macs { $MAC timeout 24h }
+        logger -t gatekeeper "Auto-approved (blacklist mode): $MAC ($HOSTNAME) - $IP"
+
+        # Send informational message to Telegram
+        MESSAGE="✅ *Auto-Approved* (Blacklist Mode)%0A%0A"
+        MESSAGE="${MESSAGE}🔹 *Device:* ${HOSTNAME:-Unknown}%0A"
+        MESSAGE="${MESSAGE}🔹 *MAC:* ${MAC}%0A"
+        MESSAGE="${MESSAGE}🔹 *IP:* ${IP}%0A"
+        MESSAGE="${MESSAGE}🔹 *Access:* 24 hours"
+
+        curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=Markdown" > /dev/null
+
+        exit 0  # Done - no approval needed
+    fi
+    # If MAC is in blacklist, fall through to normal approval request below
+fi
+
 # Step 4: For non-static devices with 'add' action, send notification
 if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ]; then
     # Configure Telegram inline keyboard with Approve/Deny buttons
