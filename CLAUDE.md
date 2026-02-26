@@ -360,6 +360,20 @@ opkg install gatekeeper_1.0.0-1_all.ipk
 3. Update `gatekeeper_sync.sh` for manual sync support
 4. Document in CLAUDE.md firewall section
 
+**When updating nftables set timeouts:**
+1. **CRITICAL**: You cannot update an existing element's timeout with `add element`
+2. **Required pattern**: Delete the element first, then add it back with new timeout
+3. **Example (EXTEND command)**:
+   ```bash
+   # WRONG - doesn't update timeout:
+   nft "add element inet fw4 approved_macs { $MAC timeout 60m }"
+
+   # CORRECT - delete first, then add:
+   nft "delete element inet fw4 approved_macs { $MAC }" 2>/dev/null
+   nft "add element inet fw4 approved_macs { $MAC timeout 60m }"
+   ```
+4. Always suppress delete errors with `2>/dev/null` (element might not exist)
+
 **When debugging event pipeline:**
 1. Check each stage independently using logs
 2. Test `dnsmasq_trigger.sh` manually: `/usr/bin/dnsmasq_trigger.sh add aa:bb:cc:dd:ee:ff 192.168.1.100 test-device add`

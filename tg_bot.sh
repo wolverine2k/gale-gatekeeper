@@ -412,6 +412,9 @@ EOF
                     # Calculate new timeout (current + 30 minutes = current + 1800 seconds)
                     TOTAL_SECONDS=$((CURRENT_SECONDS + 1800))
 
+                    # Delete existing entry first (required to update timeout)
+                    nft "delete element inet fw4 denied_macs { $TARGET_MAC }" 2>/dev/null
+
                     # Re-add MAC with extended timeout
                     nft "add element inet fw4 denied_macs { $TARGET_MAC timeout ${TOTAL_SECONDS}s }"
                     MSG="⏳ Extended denial timeout for $TARGET_MAC (+30m, now ${TOTAL_SECONDS}s total)"
@@ -481,6 +484,9 @@ EOF
 
                     # Calculate new timeout (current + 30 minutes = current + 1800 seconds)
                     TOTAL_SECONDS=$((CURRENT_SECONDS + 1800))
+
+                    # Delete existing entry first (required to update timeout)
+                    nft "delete element inet fw4 approved_macs { $TARGET_MAC }" 2>/dev/null
 
                     # Re-add MAC with extended timeout
                     nft "add element inet fw4 approved_macs { $TARGET_MAC timeout ${TOTAL_SECONDS}s }"
