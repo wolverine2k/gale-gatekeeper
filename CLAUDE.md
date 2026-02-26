@@ -13,8 +13,16 @@ The system operates as a 4-stage event pipeline:
 1. **dnsmasq** → Detects DHCP events (new device connections)
 2. **dnsmasq_trigger.sh** → Bridges dnsmasq to ubus (sends ubus event)
 3. **gatekeeper_trigger.sh** → Listens to ubus events, implements rate limiting (60s), triggers gatekeeper.sh
-4. **gatekeeper.sh** → Checks static leases, sends Telegram notification, implements 5-minute auto-deny timer
+4. **gatekeeper.sh** → Validates device state (checks static_macs, denied_macs, approved_macs), sends Telegram notification, implements 5-minute auto-deny timer
 5. **tg_bot.sh** → Continuous polling daemon for Telegram commands (Approve/Deny buttons + text commands)
+
+**Important: gatekeeper.sh validation order**
+Before sending any notification, the script checks in this order:
+1. Is MAC in static_macs? → Auto-approve (skip notification)
+2. Is MAC in denied_macs? → Silently exit (already denied)
+3. Is MAC in approved_macs? → Silently exit (already approved)
+4. Blacklist mode ON + MAC not in blacklist? → Auto-approve with 24h timeout
+5. Otherwise → Send approval request to Telegram
 
 ### Firewall Integration (nftables)
 
@@ -88,6 +96,37 @@ Blacklist mode inverts the approval logic for more convenient management of trus
 | `gatekeeper_trigger_listener` | Init script for ubus listener daemon |
 | `gatekeeper_sync.sh` | Manual MAC sync utility (supports static and blacklist) |
 
+## Project Structure
+
+Development files (repository root):
+```
+gatekeeper/
+├── gatekeeper.sh                  # Main scripts (deploy to /usr/bin/)
+├── tg_bot.sh
+├── gatekeeper_trigger.sh
+├── dnsmasq_trigger.sh
+├── gatekeeper_sync.sh
+├── gatekeeper.nft                 # Firewall rules (deploy to /etc/gatekeeper/)
+├── gatekeeper_init                # Init scripts (deploy to /etc/init.d/)
+├── tg_gatekeeper
+├── gatekeeper_trigger_listener
+├── deploy.sh                      # Automated deployment script
+├── opkg/
+│   ├── Makefile                   # OpenWrt package definition
+│   └── etc/config/gatekeeper      # UCI config template
+├── README.md                      # User documentation
+└── CLAUDE.md                      # Developer/AI documentation (this file)
+```
+
+Runtime structure (on router):
+```
+/usr/bin/                          # Executable scripts
+/etc/gatekeeper/                   # Configuration
+/etc/init.d/                       # Service management
+/etc/config/gatekeeper             # UCI config (Telegram credentials)
+/tmp/                              # Runtime state (non-persistent)
+```
+
 ## Telegram Bot Commands
 
 Interactive commands (text-based):
@@ -123,6 +162,36 @@ Callback handlers (inline buttons):
 ## Development Environment
 
 This is an OpenWrt package designed for deployment on routers (tested on Gale). Development is done on the host machine, then deployed to the router.
+
+### Development Workflow
+
+**Quick deploy with automated script:**
+```bash
+# Deploy all files and restart services
+./deploy.sh 192.168.1.1
+
+# Test before deploying
+./deploy.sh 192.168.1.1 --dry-run
+
+# Deploy without restarting services
+./deploy.sh 192.168.1.1 --no-restart
+
+# Only update scripts (no config/init files)
+./deploy.sh 192.168.1.1 --scripts-only
+```
+
+The `deploy.sh` script automates:
+- File copying via SCP
+- Permission setting
+- Service restarts
+- Basic verification checks
+
+**Manual deployment:**
+```bash
+# Quick script update
+scp gatekeeper.sh tg_bot.sh root@192.168.1.1:/usr/bin/
+ssh root@192.168.1.1 "/etc/init.d/tg_gatekeeper restart"
+```
 
 ### Dependencies
 
@@ -204,11 +273,32 @@ nft flush set inet fw4 bypass_switch
 
 ### OpenWrt Package Build
 
-The `opkg/Makefile` defines the OpenWrt package structure. Build using OpenWrt SDK:
+The `opkg/Makefile` defines the OpenWrt package structure.
+
+**Package metadata:**
+- Package name: `gatekeeper`
+- Version: 1.0.0
+- Dependencies: `jq`, `curl`, `coreutils`, `coreutils-timeout`
+- License: MIT
+
+**Build using OpenWrt SDK:**
 ```bash
 # In OpenWrt buildroot
 make package/gatekeeper/compile
+
+# Generate .ipk package
+make package/gatekeeper/install
+
+# Clean build
+make package/gatekeeper/clean
 ```
+
+**Installation on router:**
+```bash
+opkg install gatekeeper_1.0.0-1_all.ipk
+```
+
+**Note:** There's a typo in line 62 of `opkg/Makefile`: `gatekeeper_sync.h` should be `gatekeeper_sync.sh`
 
 ## Important Implementation Details
 
@@ -223,8 +313,25 @@ make package/gatekeeper/compile
 - If not approved, edits Telegram message and adds to denied_macs
 - Prevents notification spam for ignored devices
 
-### Duplicate Code Issue
-Note: Both `gatekeeper.sh` and `tg_bot.sh` contain duplicated code sections (lines 77-151 duplicated at 152-194 in gatekeeper.sh, lines 85-289 duplicated at 291-438 in tg_bot.sh). This should be cleaned up.
+### IPv6 Filtering
+- `dnsmasq_trigger.sh` automatically filters out IPv6 DHCP requests
+- Only IPv4 "add" events trigger notifications
+- Reduces noise from dual-stack DHCP activity
+
+### Code Refactoring Opportunities
+
+**Duplicate Code:**
+- `gatekeeper.sh`: Lines 77-151 are duplicated at 152-194
+- `tg_bot.sh`: Lines 85-289 are duplicated at 291-438
+
+**Recommended approach:**
+1. Extract common functions into a shared library (e.g., `/usr/lib/gatekeeper-common.sh`)
+2. Functions to extract:
+   - Telegram API interaction (send_message, edit_message)
+   - Hostname resolution logic
+   - nftables set manipulation
+   - UCI config reading
+3. Source the library in both scripts: `. /usr/lib/gatekeeper-common.sh`
 
 ### Security Considerations
 - MAC addresses can be spoofed (Layer 2 security only)
@@ -232,6 +339,41 @@ Note: Both `gatekeeper.sh` and `tg_bot.sh` contain duplicated code sections (lin
 - Only responds to authorized CHAT_ID in Telegram
 - Telegram API uses HTTPS with token authentication
 - State files in `/tmp` are non-persistent (cleared on reboot)
+
+### Common Development Patterns
+
+**When adding new Telegram commands:**
+1. Add command handler in `tg_bot.sh` message processing loop
+2. Follow existing pattern: check command, validate input, perform action
+3. Send response using `send_message` function
+4. Update HELP command text with new command description
+
+**When modifying firewall behavior:**
+1. Edit `gatekeeper.nft` for rule changes
+2. Test with `fw4 reload` (does NOT restart services)
+3. Verify with `nft list chain inet fw4 gatekeeper_forward`
+4. Check packet counters to confirm traffic matching
+
+**When adding new nftables sets:**
+1. Define set in `gatekeeper.nft` with appropriate flags (timeout, interval, etc.)
+2. Add set synchronization to `gatekeeper_init` if it needs boot-time population
+3. Update `gatekeeper_sync.sh` for manual sync support
+4. Document in CLAUDE.md firewall section
+
+**When debugging event pipeline:**
+1. Check each stage independently using logs
+2. Test `dnsmasq_trigger.sh` manually: `/usr/bin/dnsmasq_trigger.sh add aa:bb:cc:dd:ee:ff 192.168.1.100 test-device add`
+3. Monitor ubus events: `ubus listen dhcp.event`
+4. Check rate limiting locks: `ls -la /tmp/dns_locks/`
+
+**When modifying device approval logic:**
+1. Always check ALL nftables sets before sending notifications:
+   - `static_macs` (auto-approved)
+   - `denied_macs` (already denied)
+   - `approved_macs` (already approved)
+2. Exit early to prevent duplicate notifications for devices that reconnect/renew DHCP
+3. Order matters: check denied before approved to prioritize explicit denials
+4. Use `grep -q` for silent matching (exit code only, no output)
 
 ## Installation Flow
 

@@ -114,6 +114,13 @@ if nft list set inet fw4 denied_macs | grep  -q "$MAC"; then
     exit 0  # Silently exit for denied devices
 fi
 
+# Step 2.5: Check if already approved in nftables approved_macs set
+# Don't send approval notification if device is already approved
+# This prevents duplicate notifications when devices reconnect or renew DHCP
+if nft list set inet fw4 approved_macs | grep -q "$MAC"; then
+    exit 0  # Silently exit for already-approved devices
+fi
+
 # Step 3: Input validation - Ensure valid MAC provided
 if [[ -z "${MAC// }" ]]; then
     exit 0  # Invalid input, nothing to process
