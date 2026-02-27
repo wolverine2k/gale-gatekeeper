@@ -42,7 +42,7 @@
 # - Runs as a continuous daemon managed by procd (via tg_gatekeeper init script)
 # - Uses long polling (30s timeout) for efficient real-time updates
 # - Maintains update offset to prevent duplicate message processing
-# - Integrates with nftables sets: approved_macs, denied_macs, static_macs, bypass_switch
+# - Integrates with nftables sets: approved_macs, denied_macs, static_macs, blacklist_macs
 #
 # Command Interface:
 # - HELP: Display list of all available commands with descriptions
@@ -259,9 +259,14 @@ while true; do
         # Display gatekeeper status and list all active guests
         # Shows bypass status, device list with hostnames, and command hints
         elif [ "$CMD" = "STATUS" ]; then
-            # Check global bypass status
-            # If bypass_switch contains ff:ff:ff:ff:ff:ff, gatekeeper is disabled
-            BYPASS=$(nft list set inet fw4 bypass_switch | grep -q "ff:ff:ff:ff:ff:ff" && echo "🔓 DISABLED" || echo "🛡️ ENABLED")
+            # Check global bypass status by counting rules in gatekeeper_forward chain
+            # If chain is empty (no drop/accept rules), gatekeeper is disabled
+            RULE_COUNT=$(nft list chain inet fw4 gatekeeper_forward 2>/dev/null | grep -c "drop\|accept" || echo "0")
+            if [ "$RULE_COUNT" = "0" ]; then
+                BYPASS="🔓 DISABLED"
+            else
+                BYPASS="🛡️ ENABLED"
+            fi
             
             # Query both approved and denied MAC lists for active timeouts
             # Only shows entries with "expires" timestamp (active timeouts)
@@ -550,21 +555,41 @@ EOF
 
         # === ENABLE COMMAND ===
         # Re-enable gatekeeper after emergency disable
-        # Clears bypass_switch to restore normal firewall filtering
+        # Reloads firewall rules to restore normal filtering
         elif [ "$CMD" = "ENABLE" ]; then
-            # Remove all entries from bypass_switch (including ff:ff:ff:ff:ff:ff)
-            # Restores normal gatekeeper firewall operation
-            nft flush set inet fw4 bypass_switch
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=🛡️ Enabled"
+            # Reload firewall to restore gatekeeper rules
+            # This recreates the gatekeeper_forward chain with all filter rules
+            fw4 reload >/dev/null 2>&1
+
+            # Verify that filtering was restored by checking if chain exists
+            if nft list chain inet fw4 gatekeeper_forward >/dev/null 2>&1; then
+                MSG="🛡️ *Gatekeeper Enabled*\n\nFiltering restored. All devices subject to approval."
+            else
+                MSG="⚠️ *Warning*\n\nFirewall reload completed but gatekeeper chain not found."
+            fi
+            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
         # === DISABLE COMMAND ===
         # Emergency disable gatekeeper (global bypass)
         # Allows all LAN→WAN traffic regardless of MAC address
         elif [ "$CMD" = "DISABLE" ]; then
-            # Add magic MAC address to bypass_switch to activate global bypass
-            # Firewall rules check for this MAC and skip all filtering if present
-            nft "add element inet fw4 bypass_switch { ff:ff:ff:ff:ff:ff }"
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=🔓 Disabled"
+            # Flush the gatekeeper_forward chain to remove all filter rules
+            # This effectively disables filtering until ENABLE is called
+            # The chain still exists but has no rules, so all traffic passes
+            nft flush chain inet fw4 gatekeeper_forward 2>/dev/null
+
+            # Verify that filtering was disabled by checking if chain is empty
+            RULE_COUNT=$(nft list chain inet fw4 gatekeeper_forward 2>/dev/null | grep -c "drop\|accept" || echo "0")
+            if [ "$RULE_COUNT" = "0" ]; then
+                MSG="🔓 *Gatekeeper Disabled*\n\n⚠️ All devices now have network access.\n\nSend \`ENABLE\` to restore filtering."
+            else
+                MSG="⚠️ *Warning*\n\nDisable attempted but some rules remain.\n\nYou may need to manually reload firewall."
+            fi
+            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
         # === CLEAR COMMAND ===
         # Clear activity logs and hostname cache

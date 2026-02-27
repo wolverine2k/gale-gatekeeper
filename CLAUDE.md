@@ -26,19 +26,22 @@ Before sending any notification, the script checks in this order:
 
 ### Firewall Integration (nftables)
 
-The firewall logic is defined in `gatekeeper.nft` and uses five nftables sets:
+The firewall logic is defined in `gatekeeper.nft` and uses four nftables sets:
 
 - **static_macs**: Permanent whitelist from UCI static DHCP leases (no timeout)
 - **approved_macs**: Temporary approved guests (30 minute timeout, or 24 hours in blacklist mode)
 - **denied_macs**: Explicitly denied devices (30 minute timeout to allow retry)
-- **bypass_switch**: Emergency global bypass (MAC ff:ff:ff:ff:ff:ff activates it)
 - **blacklist_macs**: MACs requiring approval when blacklist mode is ON (no timeout)
 
 Rule evaluation order (priority -10, runs before default filter):
-1. Emergency bypass (if bypass_switch contains ff:ff:ff:ff:ff:ff)
-2. Static VIPs (static_macs)
-3. Approved guests (approved_macs)
-4. Default block (drops all LAN→WAN traffic not in above sets)
+1. Static VIPs (static_macs)
+2. Approved guests (approved_macs)
+3. Default block (drops all LAN→WAN traffic not in above sets)
+
+**Emergency Bypass Mechanism:**
+- **DISABLE**: Flushes the gatekeeper_forward chain (removes all rules, allows all traffic)
+- **ENABLE**: Reloads firewall via `fw4 reload` (restores all filtering rules)
+- This mechanism works immediately without requiring a reboot
 
 ### State Management
 
@@ -178,6 +181,9 @@ This is an OpenWrt package designed for deployment on routers (tested on Gale). 
 
 # Only update scripts (no config/init files)
 ./deploy.sh 192.168.1.1 --scripts-only
+
+# Only update config file
+./deploy.sh 192.168.1.1 --config-only
 ```
 
 The `deploy.sh` script automates:
@@ -245,7 +251,7 @@ Check nftables sets:
 nft list set inet fw4 approved_macs
 nft list set inet fw4 denied_macs
 nft list set inet fw4 static_macs
-nft list set inet fw4 bypass_switch
+nft list set inet fw4 blacklist_macs
 ```
 
 Service management:
@@ -261,14 +267,16 @@ fw4 reload                    # Apply firewall config changes
 nft list chain inet fw4 gatekeeper_forward  # View rule stats
 ```
 
-Emergency disable:
+Emergency disable (via Telegram):
 ```bash
-nft add element inet fw4 bypass_switch { ff:ff:ff:ff:ff:ff }
+# Send "DISABLE" command in Telegram
+# Or manually: nft flush chain inet fw4 gatekeeper_forward
 ```
 
-Emergency enable:
+Emergency enable (via Telegram):
 ```bash
-nft flush set inet fw4 bypass_switch
+# Send "ENABLE" command in Telegram
+# Or manually: fw4 reload
 ```
 
 ### OpenWrt Package Build
@@ -339,6 +347,15 @@ opkg install gatekeeper_1.0.0-1_all.ipk
 - Only responds to authorized CHAT_ID in Telegram
 - Telegram API uses HTTPS with token authentication
 - State files in `/tmp` are non-persistent (cleared on reboot)
+
+### Recent Bug Fixes and Changes
+
+**Recent commits (2026-02-27):**
+- **EXTEND/DEXTEND timeout fix**: Fixed commands not properly updating timeouts (must delete element before re-adding with new timeout)
+- **Duplicate notifications fix**: Prevented duplicate approval notifications when already-approved devices reconnect
+- **Blacklist mode**: Added blacklist functionality for inverted approval logic (trust-by-default mode)
+
+These fixes are already reflected in the codebase and documented in the relevant sections below.
 
 ### Common Development Patterns
 

@@ -29,18 +29,21 @@
 # gatekeeper access control system.
 #
 # Firewall Architecture:
-# The system uses five nftables sets to manage network access:
+# The system uses four nftables sets to manage network access:
 # - static_macs: Permanent whitelist (static DHCP leases) - no timeout
 # - approved_macs: Temporary approved guests - enforced timeout (30min default)
 # - denied_macs: Devices marked as denied - timeout-based blocking
-# - bypass_switch: Emergency global bypass - ff:ff:ff:ff:ff:ff activates it
 # - blacklist_macs: MACs requiring approval when blacklist mode is ON - no timeout
 #
 # Rule Processing Order (Priority -10 means runs before default filter):
-# 1. Emergency Bypass: Global off switch for emergencies (sets evaluated top-to-bottom)
-# 2. Static VIPs: Permanent always-allowed devices
-# 3. Approved Guests: Devices with temporary approval via Telegram commands
-# 4. Default Block: Blocks all LAN-to-WAN traffic except matched MACs
+# 1. Static VIPs: Permanent always-allowed devices
+# 2. Approved Guests: Devices with temporary approval via Telegram commands
+# 3. Default Block: Blocks all LAN-to-WAN traffic except matched MACs
+#
+# Emergency Bypass:
+# - DISABLE: Flushes this chain (nft flush chain inet fw4 gatekeeper_forward)
+# - ENABLE: Reloads firewall (fw4 reload) to restore rules
+# - This mechanism works immediately without requiring a reboot
 #
 # Rule Evaluation:
 # - nftables evaluates rules sequentially until a match is found
@@ -66,10 +69,12 @@
 # - timeout flags: Auto-cleanup after time expires (prevents accumulation)
 #
 # Troubleshooting:
-# - Verify sets exist: nft list set inet fw4 (static_macs|approved_macs|denied_macs)
-# - Check bypass status: nft list set inet fw4 bypass_switch
+# - Verify sets exist: nft list set inet fw4 (static_macs|approved_macs|denied_macs|blacklist_macs)
+# - Check if gatekeeper is enabled: nft list chain inet fw4 gatekeeper_forward (empty = disabled)
 # - View rule stats: nft list chain inet fw4 gatekeeper_forward
 # - Live view: nft monitor | grep inet/fw4 (real-time rule evaluation)
+# - Manual disable: nft flush chain inet fw4 gatekeeper_forward
+# - Manual enable: fw4 reload
 
 # Execute nftables commands inline (using heredoc for readability)
 nft -f - <<EOF
@@ -82,9 +87,6 @@ add set inet fw4 denied_macs { type ether_addr; flags timeout; }
 
 # static_macs: Permanent whitelist (never expires)
 add set inet fw4 static_macs { type ether_addr; }
-
-# bypass_switch: Emergency off-switch set (non-timeout for stability)
-add set inet fw4 bypass_switch { type ether_addr; }
 
 # blacklist_macs: MACs that require approval when blacklist mode is ON (permanent list)
 add set inet fw4 blacklist_macs { type ether_addr; }
@@ -100,20 +102,15 @@ flush chain inet fw4 gatekeeper_forward
 
 # 4. Apply the Gatekeeper logic (evaluated in order, first match wins)
 
-# Rule 1: Emergency Bypass
-# If MAC ff:ff:ff:ff:ff:ff is in the bypass set, allow ALL traffic
-# Use format_ff:ff:ff:ff:ff:ff for testing or emergencies
-add rule inet fw4 gatekeeper_forward ether saddr @bypass_switch accept
-
-# Rule 2: Allow Static VIPs (From DHCP Leases)
+# Rule 1: Allow Static VIPs (From DHCP Leases)
 # Permanent devices: static DHCP assignments get immediate access
 add rule inet fw4 gatekeeper_forward ether saddr @static_macs accept
 
-# Rule 3: Allow Approved Guests (Temporary)
+# Rule 2: Allow Approved Guests (Temporary)
 # Devices manually approved via Telegram with timeout-based access
 add rule inet fw4 gatekeeper_forward ether saddr @approved_macs accept
 
-# Rule 4: Block everyone else from LAN to WAN
+# Rule 3: Block everyone else from LAN to WAN
 # Default deny: Blocks LAN->WAN for non-whitelisted MACs
 # iifname "br-lan": Only affects traffic from LAN interface
 # counter: Tracks statistics for dropped packets
