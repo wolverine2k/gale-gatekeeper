@@ -8,6 +8,7 @@
 # Options:
 #   --dry-run        Show what would be deployed without actually deploying
 #   --no-restart     Don't restart services after deployment
+#   --restart-only   Only restart services (no file deployment)
 #   --config-only    Only deploy configuration file
 #   --scripts-only   Only deploy scripts (no config, no init scripts)
 #
@@ -29,6 +30,7 @@ NC='\033[0m' # No Color
 # Default options
 DRY_RUN=false
 RESTART_SERVICES=true
+RESTART_ONLY=false
 CONFIG_ONLY=false
 SCRIPTS_ONLY=false
 
@@ -50,6 +52,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-restart)
             RESTART_SERVICES=false
+            shift
+            ;;
+        --restart-only)
+            RESTART_ONLY=true
             shift
             ;;
         --config-only)
@@ -164,13 +170,13 @@ fi
 print_success "Connected to $ROUTER"
 
 # Deploy configuration file
-if [ "$SCRIPTS_ONLY" = false ]; then
+if [ "$RESTART_ONLY" = false ] && [ "$SCRIPTS_ONLY" = false ]; then
     print_header "Deploying configuration"
     deploy_file "opkg/etc/config/gatekeeper" "/etc/config/gatekeeper" "UCI config file"
 fi
 
 # Deploy main scripts
-if [ "$CONFIG_ONLY" = false ]; then
+if [ "$RESTART_ONLY" = false ] && [ "$CONFIG_ONLY" = false ]; then
     print_header "Deploying main scripts"
     deploy_file "gatekeeper.sh" "/usr/bin/gatekeeper.sh" "Main approval handler"
     deploy_file "tg_bot.sh" "/usr/bin/tg_bot.sh" "Telegram bot daemon"
@@ -188,7 +194,7 @@ if [ "$CONFIG_ONLY" = false ]; then
 fi
 
 # Deploy firewall rules
-if [ "$CONFIG_ONLY" = false ]; then
+if [ "$RESTART_ONLY" = false ] && [ "$CONFIG_ONLY" = false ]; then
     print_header "Deploying firewall rules"
 
     # Create directory if it doesn't exist
@@ -199,7 +205,7 @@ if [ "$CONFIG_ONLY" = false ]; then
 fi
 
 # Deploy init scripts
-if [ "$CONFIG_ONLY" = false ] && [ "$SCRIPTS_ONLY" = false ]; then
+if [ "$RESTART_ONLY" = false ] && [ "$CONFIG_ONLY" = false ] && [ "$SCRIPTS_ONLY" = false ]; then
     print_header "Deploying init scripts"
     deploy_file "gatekeeper_init" "/etc/init.d/gatekeeper_init" "Static/blacklist MAC sync init"
     deploy_file "tg_gatekeeper" "/etc/init.d/tg_gatekeeper" "Bot daemon init"
