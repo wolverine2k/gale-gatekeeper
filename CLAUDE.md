@@ -11,417 +11,200 @@ Gatekeeper is a Telegram-based network access control system for OpenWrt routers
 The system operates as a 4-stage event pipeline:
 
 1. **dnsmasq** → Detects DHCP events (new device connections)
-2. **dnsmasq_trigger.sh** → Bridges dnsmasq to ubus (sends ubus event)
-3. **gatekeeper_trigger.sh** → Listens to ubus events, implements rate limiting (60s), triggers gatekeeper.sh
-4. **gatekeeper.sh** → Validates device state (checks static_macs, denied_macs, approved_macs), sends Telegram notification, implements 5-minute auto-deny timer
-5. **tg_bot.sh** → Continuous polling daemon for Telegram commands (Approve/Deny buttons + text commands)
+2. **dnsmasq_trigger.sh** → Bridges dnsmasq to ubus (sends ubus event); filters IPv6 — only IPv4 "add" events pass through
+3. **gatekeeper_trigger.sh** → Listens to ubus events, implements rate limiting (60s per MAC via `/tmp/dns_locks/`), triggers gatekeeper.sh
+4. **gatekeeper.sh** → Validates device state, sends Telegram notification, implements 5-minute auto-deny timer
+5. **tg_bot.sh** → Continuous long-polling daemon for Telegram commands and inline button callbacks
 
-**Important: gatekeeper.sh validation order**
-Before sending any notification, the script checks in this order:
-1. Is MAC in static_macs? → Auto-approve (skip notification)
-2. Is MAC in denied_macs? → Silently exit (already denied)
-3. Is MAC in approved_macs? → Silently exit (already approved)
-4. Blacklist mode ON + MAC not in blacklist? → Auto-approve with 24h timeout
-5. Otherwise → Send approval request to Telegram
+**gatekeeper.sh validation order** (checked before sending any notification):
+1. MAC in `static_macs`? → Auto-approve, exit
+2. MAC in `denied_macs`? → Silently exit
+3. MAC in `approved_macs`? → Silently exit
+4. Blacklist mode ON + MAC not in `blacklist_macs`? → Auto-approve with 24h timeout, send info message
+5. Otherwise → Send approval request to Telegram with Approve/Deny buttons + start 5-minute auto-deny background timer
 
 ### Firewall Integration (nftables)
 
-The firewall logic is defined in `gatekeeper.nft` and uses four nftables sets:
+Defined in `gatekeeper.nft`, using four nftables sets in the `gatekeeper_forward` chain (priority -10, runs before default filter):
 
-- **static_macs**: Permanent whitelist from UCI static DHCP leases (no timeout)
-- **approved_macs**: Temporary approved guests (30 minute timeout, or 24 hours in blacklist mode)
-- **denied_macs**: Explicitly denied devices (30 minute timeout to allow retry)
-- **blacklist_macs**: MACs requiring approval when blacklist mode is ON (no timeout)
+| Set | Timeout | Purpose |
+|-----|---------|---------|
+| `static_macs` | none | Permanent whitelist from UCI static DHCP leases |
+| `approved_macs` | 30 min (24h in blacklist mode) | Temporarily approved guests |
+| `denied_macs` | 30 min | Explicitly denied devices (auto-expires to allow retry) |
+| `blacklist_macs` | none | MACs requiring approval when blacklist mode is ON |
 
-Rule evaluation order (priority -10, runs before default filter):
-1. Static VIPs (static_macs)
-2. Approved guests (approved_macs)
-3. Default block (drops all LAN→WAN traffic not in above sets)
-
-**Emergency Bypass Mechanism:**
-- **DISABLE**: Flushes the gatekeeper_forward chain (removes all rules, allows all traffic)
-- **ENABLE**: Reloads firewall via `fw4 reload` (restores all filtering rules)
-- This mechanism works immediately without requiring a reboot
-
-### State Management
-
-Key state files in `/tmp`:
-- `/tmp/tg_offset`: Telegram update ID tracking (prevents duplicate message processing)
-- `/tmp/gatekeeper.log`: Activity logs
-- `/tmp/mac_names`: Custom hostname cache (MAC=Name pairs from approval)
-- `/tmp/mac_map`: Temporary device ID-to-MAC mapping (for STATUS/EXTEND/REVOKE commands)
-- `/tmp/denied_mac_map`: Temporary device ID-to-MAC mapping (for DSTATUS/DEXTEND/DREVOKE commands)
-- `/tmp/dns_locks/`: Rate limiting timestamp files (60-second cooldown per MAC)
-
-### Hostname Resolution Priority
-
-When displaying devices, the bot uses this lookup order:
-1. Custom name map (`/tmp/mac_names`) - cached during approval
-2. DHCP leases (`/tmp/dhcp.leases`) - current network hostnames
-3. Static UCI config - hostname from UCI DHCP configuration
-4. Fallback: "Guest"
+**Emergency Bypass:**
+- `DISABLE`: Flushes `gatekeeper_forward` chain (all traffic allowed immediately, no reboot needed)
+- `ENABLE`: Runs `fw4 reload` (restores all filtering rules)
 
 ### Blacklist Mode
 
-Blacklist mode inverts the approval logic for more convenient management of trusted networks:
+Inverts the approval logic — useful when most devices are trusted.
 
-**Normal Mode (blacklist_mode = 0, default):**
-- All new devices require approval via Telegram
-- Static DHCP leases bypass checks
+- **OFF (default)**: All new devices require Telegram approval
+- **ON**: Only `blacklist_macs` members require approval; all others get auto-approved with 24h timeout
 
-**Blacklist Mode (blacklist_mode = 1):**
-- Only MACs in the `blacklist_macs` set require approval
-- All other MACs are auto-approved with 24-hour timeout
-- Auto-approved devices trigger an informational Telegram message (not approval request)
-- Static DHCP leases still bypass all checks
+State: `uci get gatekeeper.main.blacklist_mode` (0 or 1). MACs: `gatekeeper.blacklist.mac` list. Both persist across reboots.
 
-**Use cases:**
-- Home networks where most devices are trusted
-- Guest networks with a few restricted devices
-- Simplified management when you have more trusted than untrusted devices
+### State Files (`/tmp` — non-persistent)
 
-**Configuration:**
-- State stored in UCI: `gatekeeper.main.blacklist_mode` (0 or 1)
-- Blacklist MACs stored in UCI: `gatekeeper.blacklist.mac` (list)
-- Both persist across reboots
+| File | Purpose |
+|------|---------|
+| `/tmp/tg_offset` | Telegram update ID (prevents duplicate processing) |
+| `/tmp/gatekeeper.log` | Activity log |
+| `/tmp/mac_names` | Custom hostname cache (MAC=Name, written during approval) |
+| `/tmp/mac_map` | Session device ID→MAC mapping (STATUS/EXTEND/REVOKE) |
+| `/tmp/denied_mac_map` | Session device ID→MAC mapping (DSTATUS/DEXTEND/DREVOKE) |
+| `/tmp/dns_locks/` | Rate limiting timestamps (one file per MAC, no colons) |
+
+### Hostname Resolution Priority
+
+1. `/tmp/mac_names` — cached during approval
+2. `/tmp/dhcp.leases` — current DHCP hostnames
+3. UCI static config — configured hostname
+4. Fallback: "Guest"
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `gatekeeper.nft` | Firewall rules and nftables set definitions (5 sets) |
-| `gatekeeper.sh` | Main approval handler - sends Telegram notifications, implements auto-deny, handles blacklist mode |
-| `tg_bot.sh` | Interactive bot daemon - handles commands and callbacks, including blacklist commands |
+| `gatekeeper.nft` | Firewall rules and nftables set definitions |
+| `gatekeeper.sh` | Main approval handler — notifications, auto-deny, blacklist mode |
+| `tg_bot.sh` | Telegram bot daemon — commands, callbacks, blacklist management |
 | `dnsmasq_trigger.sh` | Minimal DHCP event bridge to ubus |
 | `gatekeeper_trigger.sh` | Ubus event listener with rate limiting |
-| `gatekeeper_init` | Init script for static and blacklist MAC sync at boot |
-| `tg_gatekeeper` | Init script for bot daemon (procd-managed) |
-| `gatekeeper_trigger_listener` | Init script for ubus listener daemon |
-| `gatekeeper_sync.sh` | Manual MAC sync utility (supports static and blacklist) |
+| `gatekeeper_init` | Init script — syncs static and blacklist MACs at boot |
+| `tg_gatekeeper` | Init script — procd-managed bot daemon |
+| `gatekeeper_trigger_listener` | Init script — ubus listener daemon |
+| `gatekeeper_sync.h` | Manual MAC sync utility (**note: file is named `.h` but is a shell script**) |
+| `deploy.sh` | Automated SCP deployment to router |
+| `opkg/Makefile` | OpenWrt SDK package definition |
+| `opkg/etc/config/gatekeeper` | UCI config template |
 
-## Project Structure
+> **Known naming issue:** The sync script file is `gatekeeper_sync.h` (not `.sh`) in the repo root. `deploy.sh` and GitHub Actions both reference `gatekeeper_sync.sh` — verify this file exists before deploying. `opkg/Makefile` line 62 also references `gatekeeper_sync.h` (correct for the actual filename but installs it as `.sh`).
 
-Development files (repository root):
-```
-gatekeeper/
-├── gatekeeper.sh                  # Main scripts (deploy to /usr/bin/)
-├── tg_bot.sh
-├── gatekeeper_trigger.sh
-├── dnsmasq_trigger.sh
-├── gatekeeper_sync.sh
-├── gatekeeper.nft                 # Firewall rules (deploy to /etc/gatekeeper/)
-├── gatekeeper_init                # Init scripts (deploy to /etc/init.d/)
-├── tg_gatekeeper
-├── gatekeeper_trigger_listener
-├── deploy.sh                      # Automated deployment script
-├── opkg/
-│   ├── Makefile                   # OpenWrt package definition
-│   └── etc/config/gatekeeper      # UCI config template
-├── README.md                      # User documentation
-└── CLAUDE.md                      # Developer/AI documentation (this file)
-```
+## Development Workflow
 
-Runtime structure (on router):
-```
-/usr/bin/                          # Executable scripts
-/etc/gatekeeper/                   # Configuration
-/etc/init.d/                       # Service management
-/etc/config/gatekeeper             # UCI config (Telegram credentials)
-/tmp/                              # Runtime state (non-persistent)
-```
-
-## Telegram Bot Commands
-
-Interactive commands (text-based):
-
-**Device Management:**
-- **HELP**: Display list of all available commands with descriptions
-- **STATUS**: Show gatekeeper status and active guests with IDs
-- **DSTATUS**: Show all denied devices with hostnames and timeout information
-- **EXTEND ID**: Extend timeout for approved guest by ID (30 min)
-- **REVOKE ID**: Immediately revoke network access
-- **DEXTEND ID**: Extend denial timeout for denied device by ID (30 min)
-- **DREVOKE ID**: Remove device from denied list (allows new access request)
-
-**Blacklist Mode:**
-- **BL_ON** / **BLACKLIST_ON**: Enable blacklist mode (only blacklisted MACs require approval)
-- **BL_OFF** / **BLACKLIST_OFF**: Disable blacklist mode (return to normal mode)
-- **BL_STATUS** / **BLACKLIST_STATUS**: Show blacklist mode status and list all blacklisted MACs
-- **BL_ADD MAC** / **BLACKLIST_ADD MAC**: Add MAC to blacklist (e.g., `BL_ADD aa:bb:cc:dd:ee:ff`)
-- **BL_REMOVE MAC** / **BLACKLIST_REMOVE MAC**: Remove MAC from blacklist
-- **BL_CLEAR** / **BLACKLIST_CLEAR**: Clear all MACs from blacklist
-
-**System Control:**
-- **LOG**: Display recent activity logs
-- **SYNC**: Manually resync static DHCP MACs from UCI config
-- **ENABLE**: Re-enable gatekeeper (clear bypass switch)
-- **DISABLE**: Emergency disable (add ff:ff:ff:ff:ff:ff to bypass_switch)
-- **CLEAR**: Clear logs and hostname cache
-
-Callback handlers (inline buttons):
-- **approve_MAC**: Add MAC to approved_macs (30 min timeout, or 24h in blacklist mode)
-- **deny_MAC**: Add MAC to denied_macs (30 min timeout)
-
-## Development Environment
-
-This is an OpenWrt package designed for deployment on routers (tested on Gale). Development is done on the host machine, then deployed to the router.
-
-### Development Workflow
-
-**Quick deploy with automated script:**
+**Deploy to router:**
 ```bash
-# Deploy all files and restart services
-./deploy.sh 192.168.1.1
-
-# Test before deploying
-./deploy.sh 192.168.1.1 --dry-run
-
-# Deploy without restarting services
+./deploy.sh 192.168.1.1              # Full deploy + service restart
+./deploy.sh 192.168.1.1 --dry-run   # Preview only
 ./deploy.sh 192.168.1.1 --no-restart
-
-# Only update scripts (no config/init files)
-./deploy.sh 192.168.1.1 --scripts-only
-
-# Only update config file
+./deploy.sh 192.168.1.1 --scripts-only   # Skip config/init files
 ./deploy.sh 192.168.1.1 --config-only
 ```
 
-The `deploy.sh` script automates:
-- File copying via SCP
-- Permission setting
-- Service restarts
-- Basic verification checks
-
-**Manual deployment:**
+**Quick script update:**
 ```bash
-# Quick script update
 scp gatekeeper.sh tg_bot.sh root@192.168.1.1:/usr/bin/
 ssh root@192.168.1.1 "/etc/init.d/tg_gatekeeper restart"
 ```
 
-### Dependencies
-
-Required on OpenWrt target:
-- `jq` - JSON parsing
-- `curl` - Telegram API communication
-- `coreutils` and `coreutils-timeout` - Extended shell utilities
-- `nftables` (fw4) - Firewall management
-- `ubus` - Event messaging system
-
-### Configuration Requirements
-
-After installation, configure Telegram credentials via UCI:
+**Debugging on router:**
 ```bash
-# Configure Telegram Bot token (from BotFather: https://t.me/botfather)
-uci set gatekeeper.main=gatekeeper
-uci set gatekeeper.main.token='YOUR_TELEGRAM_BOT_TOKEN_HERE'
+logread -f | grep -E "gatekeeper|tg_bot|DNS_LISTENER"
 
-# Configure Telegram Chat ID (send message to @userinfobot to get your ID)
-uci set gatekeeper.main.chat_id='YOUR_CHAT_ID_HERE'
-
-# Optional: Enable blacklist mode (default is 0 = OFF)
-# When enabled, only MACs in blacklist require approval
-# uci set gatekeeper.main.blacklist_mode='1'
-
-# Save configuration
-uci commit gatekeeper
-
-# Restart services to apply
-/etc/init.d/tg_gatekeeper restart
-```
-
-The configuration is stored in `/etc/config/gatekeeper` and is read by both `gatekeeper.sh` and `tg_bot.sh` via UCI or environment variables (`GATEKEEPER_TOKEN` and `GATEKEEPER_CHAT_ID`).
-
-**Blacklist mode configuration:**
-- `gatekeeper.main.blacklist_mode`: 0 (OFF, default) or 1 (ON)
-- `gatekeeper.blacklist.mac`: List of MAC addresses requiring approval when blacklist mode is ON
-- Manage via Telegram bot commands: `BL_ON`, `BL_OFF`, `BL_ADD`, `BL_REMOVE`, `BL_STATUS`
-
-### Testing and Debugging
-
-View system logs:
-```bash
-logread -f | grep gatekeeper
-logread -f | grep tg_bot
-logread -f | grep DNS_LISTENER
-```
-
-Check nftables sets:
-```bash
 nft list set inet fw4 approved_macs
 nft list set inet fw4 denied_macs
 nft list set inet fw4 static_macs
 nft list set inet fw4 blacklist_macs
+nft list chain inet fw4 gatekeeper_forward
+
+# Test pipeline manually
+/usr/bin/dnsmasq_trigger.sh add aa:bb:cc:dd:ee:ff 192.168.1.100 test-device add
+ubus listen dhcp.event
+ls -la /tmp/dns_locks/
 ```
 
-Service management:
+**Service management on router:**
 ```bash
 /etc/init.d/tg_gatekeeper restart
 /etc/init.d/gatekeeper_trigger_listener restart
 /etc/init.d/gatekeeper_init start
+fw4 reload    # Reload firewall rules without restarting services
 ```
 
-Firewall operations:
+## CI/CD and Releases
+
+GitHub Actions (`.github/workflows/makefile.yml`) builds a `.ipk` package on every push to `main` and on pull requests. Tagged releases trigger a GitHub Release with the `.ipk` attached.
+
+**To cut a release:**
 ```bash
-fw4 reload                    # Apply firewall config changes
-nft list chain inet fw4 gatekeeper_forward  # View rule stats
+git tag v1.2.3
+git push origin v1.2.3
 ```
 
-Emergency disable (via Telegram):
-```bash
-# Send "DISABLE" command in Telegram
-# Or manually: nft flush chain inet fw4 gatekeeper_forward
-```
+The workflow builds the `.ipk` directly (no OpenWrt SDK required) by assembling the `ar` archive structure manually. The built package is also uploaded as a GitHub Actions artifact on every build.
 
-Emergency enable (via Telegram):
-```bash
-# Send "ENABLE" command in Telegram
-# Or manually: fw4 reload
-```
-
-### OpenWrt Package Build
-
-The `opkg/Makefile` defines the OpenWrt package structure.
-
-**Package metadata:**
-- Package name: `gatekeeper`
-- Version: 1.0.0
-- Dependencies: `jq`, `curl`, `coreutils`, `coreutils-timeout`
-- License: MIT
-
-**Build using OpenWrt SDK:**
-```bash
-# In OpenWrt buildroot
-make package/gatekeeper/compile
-
-# Generate .ipk package
-make package/gatekeeper/install
-
-# Clean build
-make package/gatekeeper/clean
-```
-
-**Installation on router:**
+**Install from `.ipk` on router:**
 ```bash
 opkg install gatekeeper_1.0.0-1_all.ipk
 ```
 
-**Note:** There's a typo in line 62 of `opkg/Makefile`: `gatekeeper_sync.h` should be `gatekeeper_sync.sh`
+## Telegram Bot Commands
 
-## Important Implementation Details
+**Device Management:**
+- `STATUS` / `DSTATUS` — List active/denied devices with session IDs
+- `EXTEND ID` / `REVOKE ID` — Extend (30 min) or revoke approved device
+- `DEXTEND ID` / `DREVOKE ID` — Extend (30 min) or remove denied device
 
-### Rate Limiting
-- `gatekeeper_trigger.sh` prevents duplicate triggers within 60 seconds per MAC
-- Uses timestamp files in `/tmp/dns_locks/` with sanitized MAC (no colons)
-- Protects against DHCP request spam and network flapping
+**Blacklist Mode:**
+- `BL_ON` / `BL_OFF` / `BL_STATUS`
+- `BL_ADD aa:bb:cc:dd:ee:ff` / `BL_REMOVE aa:bb:cc:dd:ee:ff` / `BL_CLEAR`
+- All commands also accept `BLACKLIST_` prefix
 
-### Auto-Deny Timer
-- `gatekeeper.sh` spawns background process with 5-minute sleep
-- After timeout, checks if MAC was approved
-- If not approved, edits Telegram message and adds to denied_macs
-- Prevents notification spam for ignored devices
+**System:**
+- `HELP`, `LOG`, `SYNC`, `CLEAR`, `ENABLE`, `DISABLE`
 
-### IPv6 Filtering
-- `dnsmasq_trigger.sh` automatically filters out IPv6 DHCP requests
-- Only IPv4 "add" events trigger notifications
-- Reduces noise from dual-stack DHCP activity
+**Inline button callbacks:** `approve_MAC` / `deny_MAC`
 
-### Code Refactoring Opportunities
+## Critical Implementation Details
 
-**Duplicate Code:**
-- `gatekeeper.sh`: Lines 77-151 are duplicated at 152-194
-- `tg_bot.sh`: Lines 85-289 are duplicated at 291-438
+### nftables Timeout Updates
 
-**Recommended approach:**
-1. Extract common functions into a shared library (e.g., `/usr/lib/gatekeeper-common.sh`)
-2. Functions to extract:
-   - Telegram API interaction (send_message, edit_message)
-   - Hostname resolution logic
-   - nftables set manipulation
-   - UCI config reading
-3. Source the library in both scripts: `. /usr/lib/gatekeeper-common.sh`
+You **cannot** update an existing element's timeout with `add element`. Always delete first:
 
-### Security Considerations
-- MAC addresses can be spoofed (Layer 2 security only)
-- Designed for home/SMB use, not enterprise security
-- Only responds to authorized CHAT_ID in Telegram
-- Telegram API uses HTTPS with token authentication
-- State files in `/tmp` are non-persistent (cleared on reboot)
+```bash
+# WRONG — timeout not updated:
+nft "add element inet fw4 approved_macs { $MAC timeout 60m }"
 
-### Recent Bug Fixes and Changes
+# CORRECT:
+nft "delete element inet fw4 approved_macs { $MAC }" 2>/dev/null
+nft "add element inet fw4 approved_macs { $MAC timeout 60m }"
+```
 
-**Recent commits (2026-02-27):**
-- **EXTEND/DEXTEND timeout fix**: Fixed commands not properly updating timeouts (must delete element before re-adding with new timeout)
-- **Duplicate notifications fix**: Prevented duplicate approval notifications when already-approved devices reconnect
-- **Blacklist mode**: Added blacklist functionality for inverted approval logic (trust-by-default mode)
+Always use `2>/dev/null` on the delete (element may not exist).
 
-These fixes are already reflected in the codebase and documented in the relevant sections below.
+### Adding New Telegram Commands
 
-### Common Development Patterns
+1. Add handler in `tg_bot.sh` message processing loop (follow existing pattern)
+2. Validate input before any firewall modification
+3. Use the existing `send_message` function for responses
+4. Update the `HELP` command text
 
-**When adding new Telegram commands:**
-1. Add command handler in `tg_bot.sh` message processing loop
-2. Follow existing pattern: check command, validate input, perform action
-3. Send response using `send_message` function
-4. Update HELP command text with new command description
+### Adding New nftables Sets
 
-**When modifying firewall behavior:**
-1. Edit `gatekeeper.nft` for rule changes
-2. Test with `fw4 reload` (does NOT restart services)
-3. Verify with `nft list chain inet fw4 gatekeeper_forward`
-4. Check packet counters to confirm traffic matching
+1. Define in `gatekeeper.nft` with appropriate flags (`timeout`, `interval`, etc.)
+2. Add boot-time population to `gatekeeper_init`
+3. Update `gatekeeper_sync.h` for manual sync support
 
-**When adding new nftables sets:**
-1. Define set in `gatekeeper.nft` with appropriate flags (timeout, interval, etc.)
-2. Add set synchronization to `gatekeeper_init` if it needs boot-time population
-3. Update `gatekeeper_sync.sh` for manual sync support
-4. Document in CLAUDE.md firewall section
+### Modifying Approval Logic
 
-**When updating nftables set timeouts:**
-1. **CRITICAL**: You cannot update an existing element's timeout with `add element`
-2. **Required pattern**: Delete the element first, then add it back with new timeout
-3. **Example (EXTEND command)**:
-   ```bash
-   # WRONG - doesn't update timeout:
-   nft "add element inet fw4 approved_macs { $MAC timeout 60m }"
+Always check all four nftables sets before sending a notification (order matters — check `denied_macs` before `approved_macs`). Use `grep -q` for silent exit-code-only matching.
 
-   # CORRECT - delete first, then add:
-   nft "delete element inet fw4 approved_macs { $MAC }" 2>/dev/null
-   nft "add element inet fw4 approved_macs { $MAC timeout 60m }"
-   ```
-4. Always suppress delete errors with `2>/dev/null` (element might not exist)
+## Configuration
 
-**When debugging event pipeline:**
-1. Check each stage independently using logs
-2. Test `dnsmasq_trigger.sh` manually: `/usr/bin/dnsmasq_trigger.sh add aa:bb:cc:dd:ee:ff 192.168.1.100 test-device add`
-3. Monitor ubus events: `ubus listen dhcp.event`
-4. Check rate limiting locks: `ls -la /tmp/dns_locks/`
+```bash
+uci set gatekeeper.main=gatekeeper
+uci set gatekeeper.main.token='YOUR_BOT_TOKEN'
+uci set gatekeeper.main.chat_id='YOUR_CHAT_ID'
+uci commit gatekeeper
+/etc/init.d/tg_gatekeeper restart
+```
 
-**When modifying device approval logic:**
-1. Always check ALL nftables sets before sending notifications:
-   - `static_macs` (auto-approved)
-   - `denied_macs` (already denied)
-   - `approved_macs` (already approved)
-2. Exit early to prevent duplicate notifications for devices that reconnect/renew DHCP
-3. Order matters: check denied before approved to prioritize explicit denials
-4. Use `grep -q` for silent matching (exit code only, no output)
+Config is read via UCI or environment variables `GATEKEEPER_TOKEN` / `GATEKEEPER_CHAT_ID`.
 
-## Installation Flow
+## Security Scope
 
-1. Install dependencies: `opkg update && opkg install jq curl coreutils coreutils-timeout`
-2. Copy files to appropriate locations (see README.md file structure)
-3. Configure Telegram credentials via UCI:
-   ```bash
-   uci set gatekeeper.main=gatekeeper
-   uci set gatekeeper.main.token='YOUR_BOT_TOKEN'
-   uci set gatekeeper.main.chat_id='YOUR_CHAT_ID'
-   uci commit gatekeeper
-   ```
-4. Set permissions: `chmod +x` on all `.sh` files and init scripts
-5. Configure dnsmasq trigger: `uci set dhcp.@dnsmasq[0].dhcpscript='/usr/bin/dnsmasq_trigger.sh'`
-6. Configure firewall include: `uci add firewall include && uci set firewall.@include[-1].path='/etc/gatekeeper.nft' && uci set firewall.@include[-1].type='script'`
-7. Commit UCI changes: `uci commit dhcp && uci commit firewall`
-8. Enable services: `/etc/init.d/tg_gatekeeper enable && /etc/init.d/gatekeeper_init enable && /etc/init.d/gatekeeper_trigger_listener enable`
-9. Restart services: `/etc/init.d/firewall restart && /etc/init.d/dnsmasq restart`
-10. Start gatekeeper services
-11. Test with "Status" command in Telegram
+MAC-based (Layer 2 only) — MACs can be spoofed. Designed for home/SMB use. Bot only responds to the configured `CHAT_ID`. All state in `/tmp` is cleared on reboot.

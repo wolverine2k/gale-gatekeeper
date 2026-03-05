@@ -74,6 +74,7 @@ ubus monitor | while read -r line; do
             # These regexes find the "key":"value" and extract just the value
             ACTION=$(echo "$line" | grep -o '"action":"[^"]*' | cut -d'"' -f4)
             MAC=$(echo "$line" | grep -o '"mac":"[^"]*' | cut -d'"' -f4)
+            MAC=$(echo "$MAC" | tr 'A-Z' 'a-z')  # Normalize to lowercase (nftables stores lowercase)
             IP=$(echo "$line" | grep -o '"ip":"[^"]*' | cut -d'"' -f4)
             HOST=$(echo "$line" | grep -o '"host":"[^"]*' | cut -d'"' -f4)
 

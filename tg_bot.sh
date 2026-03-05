@@ -167,7 +167,7 @@ while true; do
 
             # Parse callback data: action (approve/deny) and device MAC address
             ACT=$(echo "$CB_DATA" | cut -d'_' -f1)
-            MAC=$(echo "$CB_DATA" | cut -d'_' -f2-)
+            MAC=$(echo "$CB_DATA" | cut -d'_' -f2- | tr '[:upper:]' '[:lower:]')  # Normalize to lowercase
 
             # Process APPROVE action
             if [ "$ACT" = "approve" ]; then
@@ -515,8 +515,9 @@ EOF
             
             if [ -n "$TARGET_MAC" ]; then
                 # Remove MAC from approved_macs set (blocks network access immediately)
-                # Device will be denied at firewall until manually re-approved
-                nft "delete element inet fw4 approved_macs { $TARGET_MAC }"
+                nft "delete element inet fw4 approved_macs { $TARGET_MAC }" 2>/dev/null
+                # Add to denied_macs for 30 minutes to suppress reconnect notifications
+                nft "add element inet fw4 denied_macs { $TARGET_MAC timeout 30m }"
                 MSG="🚫 Revoked access for $TARGET_MAC"
             else
                 # Invalid ID (not in current STATUS mapping or STATUS not run)
