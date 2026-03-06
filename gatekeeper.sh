@@ -133,7 +133,10 @@ BLACKLIST_MODE=$(uci -q get gatekeeper.main.blacklist_mode || echo "0")
 
 if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ] && [ "$BLACKLIST_MODE" = "1" ]; then
     # Blacklist mode is ON - check if MAC is in blacklist
-    if ! nft list set inet fw4 blacklist_macs | grep -qi "$MAC"; then
+    if nft list set inet fw4 blacklist_macs | grep -qi "$MAC"; then
+        # MAC IS in blacklist - fall through to normal approval request below
+        :
+    else
         # MAC is NOT in blacklist - auto-approve with 24h timeout
         nft add element inet fw4 approved_macs { $MAC timeout 24h }
         logger -t gatekeeper "Auto-approved (blacklist mode): $MAC ($HOSTNAME) - $IP"
@@ -152,7 +155,7 @@ if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ] && [ "$BLACKLIST_MODE" = "1" 
 
         exit 0  # Done - no approval needed
     fi
-    # If MAC is in blacklist, fall through to normal approval request below
+    # MAC is in blacklist - fall through to normal approval request below
 fi
 
 # Step 4: For non-static devices with 'add' action, send notification
