@@ -562,6 +562,21 @@ EOF
             # This recreates the gatekeeper_forward chain with all filter rules
             fw4 reload >/dev/null 2>&1
 
+            # Re-sync static MACs (fw4 reload clears all nftables sets)
+            nft flush set inet fw4 static_macs 2>/dev/null
+            i=0; while SM=$(uci -q get dhcp.@host[$i].mac); do
+                for sm in $SM; do nft "add element inet fw4 static_macs { $sm }" 2>/dev/null; done
+                i=$((i+1))
+            done
+
+            # Re-sync blacklist MACs (fw4 reload clears all nftables sets)
+            nft flush set inet fw4 blacklist_macs 2>/dev/null
+            BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep "\.mac=" | cut -d"'" -f2)
+            for mac in $BLACKLIST_MACS; do
+                [ -z "$mac" ] && continue
+                nft add element inet fw4 blacklist_macs { $mac } 2>/dev/null
+            done
+
             # Verify that filtering was restored by checking if chain exists
             if nft list chain inet fw4 gatekeeper_forward >/dev/null 2>&1; then
                 MSG="🛡️ *Gatekeeper Enabled*\n\nFiltering restored. All devices subject to approval."
