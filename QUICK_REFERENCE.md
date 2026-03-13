@@ -15,7 +15,8 @@
 | `BL_ON` | Enable blacklist mode (trust all except blacklist) |
 | `BL_OFF` | Disable blacklist mode (require approval for all) |
 | `BL_ADD aa:bb:cc:dd:ee:ff` | Add device to blacklist |
-| `EXTEND 1` | Give device #1 more time (+30 min) |
+| `EXTEND 1` | Give device #1 more time (+30 min default) |
+| `EXTEND 1 2` | Give device #1 more time (+2 hours) |
 | `REVOKE 1` | Kick device #1 off network |
 
 ## 🛠️ Common SSH Commands

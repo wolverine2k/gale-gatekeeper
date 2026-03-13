@@ -150,7 +150,7 @@ Send "**STATUS**" to your bot in Telegram. You should receive a status message w
 | `HELP` | Display all available commands |
 | `STATUS` | Show active approved guests with IDs |
 | `DSTATUS` | Show all denied devices |
-| `EXTEND [ID]` | Extend timeout for guest by ID (+30 min) |
+| `EXTEND [ID] [hours]` | Extend timeout for guest by ID (+30 min default, or specify hours) |
 | `REVOKE [ID]` | Immediately revoke network access |
 | `DEXTEND [ID]` | Extend denial timeout (+30 min) |
 | `DREVOKE [ID]` | Remove device from denied list |

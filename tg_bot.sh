@@ -48,7 +48,7 @@
 # - HELP: Display list of all available commands with descriptions
 # - STATUS: Display gatekeeper status and list active guests with temporary IDs
 # - DSTATUS: Display all denied devices with hostnames and timeout information
-# - EXTEND [ID]: Extend network access timeout for a specific guest (30 min)
+# - EXTEND [ID] [hours]: Extend network access timeout for a specific guest (30 min default, or specify hours)
 # - REVOKE [ID]: Immediately revoke network access for a specific guest
 # - DEXTEND [ID]: Extend denial timeout for a specific denied device (30 min)
 # - DREVOKE [ID]: Remove device from denied list and approve for 30 minutes
@@ -217,10 +217,11 @@ while true; do
         # Skip empty messages
         [ -z "$TEXT" ] && continue
 
-        # Parse command and optional argument from message text
+        # Parse command and optional arguments from message text
         # Convert command to uppercase for case-insensitive matching
         CMD=$(echo "$TEXT" | awk '{print toupper($1)}')
         ARG=$(echo "$TEXT" | awk '{print $2}')
+        ARG2=$(echo "$TEXT" | awk '{print $3}')
 
         # === HELP COMMAND ===
         # Display list of all available commands with descriptions
@@ -230,7 +231,7 @@ while true; do
             MSG="${MSG}*Device Management:*\n"
             MSG="${MSG}\`STATUS\` - Show active approved guests\n"
             MSG="${MSG}\`DSTATUS\` - Show denied devices\n"
-            MSG="${MSG}\`EXTEND [ID]\` - Extend guest timeout (+30m)\n"
+            MSG="${MSG}\`EXTEND [ID] [hours]\` - Extend guest timeout (+30m default, or specify hours)\n"
             MSG="${MSG}\`REVOKE [ID]\` - Revoke guest access\n"
             MSG="${MSG}\`DEXTEND [ID]\` - Extend denial timeout (+30m)\n"
             MSG="${MSG}\`DREVOKE [ID]\` - Approve denied device (+30m)\n\n"
@@ -314,7 +315,7 @@ while true; do
 $RAW_LIST
 EOF
                 # Add usage hint for managing guests by ID
-                MSG="${MSG}\n💡 Reply \`Extend ID\` or \`Revoke ID\`"
+                MSG="${MSG}\n💡 Reply \`Extend ID\` or \`Extend ID hours\` or \`Revoke ID\`"
             fi
 
             # Send status message with custom keyboard for quick commands
@@ -456,7 +457,8 @@ EOF
 
         # === EXTEND COMMAND ===
         # Extend network access timeout for a specific guest
-        # Usage: "EXTEND 1" - extends access for guest ID 1 by 30 minutes
+        # Usage: "EXTEND 1" - extends access for guest ID 1 by 30 minutes (default)
+        # Usage: "EXTEND 1 2" - extends access for guest ID 1 by 2 hours
         elif [ "$CMD" = "EXTEND" ] && [ -n "$ARG" ]; then
             # Lookup MAC address from temporary ID mapping created by STATUS
             TARGET_MAC=$(grep "^$ARG=" "$MAP_FILE" | cut -d'=' -f2)
@@ -487,15 +489,24 @@ EOF
                     # Calculate current remaining time in seconds
                     CURRENT_SECONDS=$((HOURS * 3600 + MINUTES * 60 + SECONDS))
 
-                    # Calculate new timeout (current + 30 minutes = current + 1800 seconds)
-                    TOTAL_SECONDS=$((CURRENT_SECONDS + 1800))
+                    # Determine extension duration: use ARG2 hours if valid, else default 30 minutes
+                    if [ -n "$ARG2" ] && echo "$ARG2" | grep -qE '^[0-9]+$' && [ "$ARG2" -gt 0 ]; then
+                        EXTEND_SECONDS=$((ARG2 * 3600))
+                        EXTEND_LABEL="+${ARG2}h"
+                    else
+                        EXTEND_SECONDS=1800
+                        EXTEND_LABEL="+30m"
+                    fi
+
+                    # Calculate new timeout (current + extension)
+                    TOTAL_SECONDS=$((CURRENT_SECONDS + EXTEND_SECONDS))
 
                     # Delete existing entry first (required to update timeout)
                     nft "delete element inet fw4 approved_macs { $TARGET_MAC }" 2>/dev/null
 
                     # Re-add MAC with extended timeout
                     nft "add element inet fw4 approved_macs { $TARGET_MAC timeout ${TOTAL_SECONDS}s }"
-                    MSG="⏳ Extended access for $TARGET_MAC (+30m, now ${TOTAL_SECONDS}s total)"
+                    MSG="⏳ Extended access for $TARGET_MAC (${EXTEND_LABEL}, now ${TOTAL_SECONDS}s total)"
                 else
                     # MAC not found or already expired
                     MSG="❌ Device not found in approved list or already expired."

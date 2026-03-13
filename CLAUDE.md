@@ -146,7 +146,7 @@ opkg install gatekeeper_1.0.0-1_all.ipk
 
 **Device Management:**
 - `STATUS` / `DSTATUS` — List active/denied devices with session IDs
-- `EXTEND ID` / `REVOKE ID` — Extend (30 min) or revoke approved device
+- `EXTEND ID [hours]` / `REVOKE ID` — Extend (30 min default, or specify hours) or revoke approved device
 - `DEXTEND ID` / `DREVOKE ID` — Extend (30 min) or remove denied device
 
 **Blacklist Mode:**
