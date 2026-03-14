@@ -50,12 +50,18 @@ uci show gatekeeper
 
 ### Emergency disable
 ```bash
-nft add element inet fw4 bypass_switch { ff:ff:ff:ff:ff:ff }
+# Via Telegram bot:
+DISABLE
+# Or directly on router:
+nft flush chain inet fw4 gatekeeper_forward
 ```
 
 ### Re-enable
 ```bash
-nft flush set inet fw4 bypass_switch
+# Via Telegram bot:
+ENABLE
+# Or directly on router:
+fw4 reload
 ```
 
 ## 🎯 Blacklist Mode Quick Guide

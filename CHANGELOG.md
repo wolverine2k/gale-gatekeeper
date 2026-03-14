@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **REVOKE/DREVOKE not appearing in logread** - Added `logger -t tg_bot` calls to REVOKE and DREVOKE so they appear in `logread -f | grep tg_bot` alongside other bot operations
+- **BLADD allows duplicate MACs** - BLADD now checks if MAC already exists in `blacklist_macs` before adding to UCI and nftables; responds with an info message if already present
+
+### Changed
+- **Blacklist command names** - Renamed `BL_ON`/`BL_OFF`/`BL_STATUS`/`BL_ADD`/`BL_REMOVE`/`BL_CLEAR` to `BLON`/`BLOFF`/`BLSTATUS`/`BLADD`/`BLREMOVE`/`BLCLEAR` (shorter, no underscore); `BLACKLIST_` prefix aliases still work
+
+### Documentation
+- Fixed README and QUICK_REFERENCE: removed non-existent `bypass_switch` nftables set; corrected emergency disable/enable commands to use `DISABLE`/`ENABLE` bot commands or `nft flush chain` / `fw4 reload`
+
 ### Added
 - **Blacklist Mode** - Major new feature that inverts approval logic
   - Only blacklisted MACs require approval, others are auto-approved for 24 hours

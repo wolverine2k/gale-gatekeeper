@@ -230,14 +230,13 @@ nftables (approved_macs or denied_macs)
 
 ### Firewall Sets (nftables)
 
-The system uses 5 nftables sets for access control:
+The system uses 4 nftables sets for access control:
 
 | Set | Purpose | Timeout |
 |-----|---------|---------|
 | `static_macs` | Permanent whitelist (static DHCP leases) | None |
 | `approved_macs` | Temporarily approved guests | 30 min (or 24h in blacklist mode) |
 | `denied_macs` | Explicitly denied devices | 30 min |
-| `bypass_switch` | Emergency global bypass | None |
 | `blacklist_macs` | MACs requiring approval in blacklist mode | None |
 
 ### File Structure
@@ -311,8 +310,8 @@ uci commit gatekeeper
 | Check bot process | `ps \| grep tg_bot` |
 | Check nftables sets | `nft list set inet fw4 approved_macs` |
 | Manual MAC approval | `nft add element inet fw4 approved_macs { MAC timeout 30m }` |
-| Emergency disable | `nft add element inet fw4 bypass_switch { ff:ff:ff:ff:ff:ff }` |
-| Re-enable | `nft flush set inet fw4 bypass_switch` |
+| Emergency disable | Send `DISABLE` to bot, or `nft flush chain inet fw4 gatekeeper_forward` |
+| Re-enable | Send `ENABLE` to bot, or `fw4 reload` |
 
 ## 🐛 Troubleshooting
 
