@@ -57,7 +57,7 @@ config gatekeeper 'main'
 # Blacklist MAC addresses
 # When blacklist mode is ON, only these MACs will require approval
 # All other MACs will be auto-approved with 24-hour timeout
-# Add MACs via Telegram bot: BL_ADD aa:bb:cc:dd:ee:ff
+# Add MACs via Telegram bot: BLADD aa:bb:cc:dd:ee:ff
 config blacklist 'blacklist'
 	# list mac 'aa:bb:cc:dd:ee:ff'
 	# list mac '11:22:33:44:55:66'

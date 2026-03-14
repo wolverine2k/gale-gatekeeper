@@ -15,12 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Auto-approval messages include MAC, IP, and hostname information
 
 - **New Telegram Bot Commands**
-  - `BL_ON` / `BLACKLIST_ON` - Enable blacklist mode
-  - `BL_OFF` / `BLACKLIST_OFF` - Disable blacklist mode
-  - `BL_STATUS` / `BLACKLIST_STATUS` - Show blacklist status and list MACs
-  - `BL_ADD [MAC]` / `BLACKLIST_ADD [MAC]` - Add MAC to blacklist
-  - `BL_REMOVE [MAC]` / `BLACKLIST_REMOVE [MAC]` - Remove MAC from blacklist
-  - `BL_CLEAR` / `BLACKLIST_CLEAR` - Clear all blacklist entries
+  - `BLON` / `BLACKLIST_ON` - Enable blacklist mode
+  - `BLOFF` / `BLACKLIST_OFF` - Disable blacklist mode
+  - `BLSTATUS` / `BLACKLIST_STATUS` - Show blacklist status and list MACs
+  - `BLADD [MAC]` / `BLACKLIST_ADD [MAC]` - Add MAC to blacklist
+  - `BLREMOVE [MAC]` / `BLACKLIST_REMOVE [MAC]` - Remove MAC from blacklist
+  - `BLCLEAR` / `BLACKLIST_CLEAR` - Clear all blacklist entries
 
 - **Automated Deployment**
   - New `deploy.sh` script for automated deployment via SCP

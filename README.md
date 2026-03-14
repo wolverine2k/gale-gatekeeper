@@ -158,12 +158,12 @@ Send "**STATUS**" to your bot in Telegram. You should receive a status message w
 ### Blacklist Mode ⭐ NEW
 | Command | Description |
 |---------|-------------|
-| `BL_ON` | Enable blacklist mode (only blacklisted MACs require approval) |
-| `BL_OFF` | Disable blacklist mode (return to normal mode) |
-| `BL_STATUS` | Show blacklist mode status and list MACs |
-| `BL_ADD [MAC]` | Add MAC to blacklist (e.g., `BL_ADD aa:bb:cc:dd:ee:ff`) |
-| `BL_REMOVE [MAC]` | Remove MAC from blacklist |
-| `BL_CLEAR` | Clear all MACs from blacklist |
+| `BLON` | Enable blacklist mode (only blacklisted MACs require approval) |
+| `BLOFF` | Disable blacklist mode (return to normal mode) |
+| `BLSTATUS` | Show blacklist mode status and list MACs |
+| `BLADD [MAC]` | Add MAC to blacklist (e.g., `BLADD aa:bb:cc:dd:ee:ff`) |
+| `BLREMOVE [MAC]` | Remove MAC from blacklist |
+| `BLCLEAR` | Clear all MACs from blacklist |
 
 ### System Control
 | Command | Description |
@@ -196,13 +196,13 @@ Blacklist mode inverts the approval logic for easier management of trusted netwo
 ### Example Workflow
 ```bash
 # Enable blacklist mode
-Send: BL_ON
+Send: BLON
 
 # Add suspicious device to blacklist
-Send: BL_ADD aa:bb:cc:dd:ee:ff
+Send: BLADD aa:bb:cc:dd:ee:ff
 
 # Check status
-Send: BL_STATUS
+Send: BLSTATUS
 
 # Now only aa:bb:cc:dd:ee:ff will require approval
 # All other devices auto-approved for 24h

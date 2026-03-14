@@ -12,9 +12,9 @@
 |---------|--------------|
 | `STATUS` | Show active devices |
 | `HELP` | List all commands |
-| `BL_ON` | Enable blacklist mode (trust all except blacklist) |
-| `BL_OFF` | Disable blacklist mode (require approval for all) |
-| `BL_ADD aa:bb:cc:dd:ee:ff` | Add device to blacklist |
+| `BLON` | Enable blacklist mode (trust all except blacklist) |
+| `BLOFF` | Disable blacklist mode (require approval for all) |
+| `BLADD aa:bb:cc:dd:ee:ff` | Add device to blacklist |
 | `EXTEND 1` | Give device #1 more time (+30 min default) |
 | `EXTEND 1 2` | Give device #1 more time (+2 hours) |
 | `REVOKE 1` | Kick device #1 off network |
@@ -72,9 +72,9 @@ nft flush set inet fw4 bypass_switch
 ### Quick setup
 ```bash
 # In Telegram
-BL_ON                           # Enable blacklist mode
-BL_ADD aa:bb:cc:dd:ee:ff       # Add suspicious device to blacklist
-BL_STATUS                       # Check status
+BLON                           # Enable blacklist mode
+BLADD aa:bb:cc:dd:ee:ff       # Add suspicious device to blacklist
+BLSTATUS                       # Check status
 
 # Now only aa:bb:cc:dd:ee:ff requires approval
 # All other devices automatically approved for 24 hours

@@ -150,8 +150,8 @@ opkg install gatekeeper_1.0.0-1_all.ipk
 - `DEXTEND ID` / `DREVOKE ID` — Extend (30 min) or remove denied device
 
 **Blacklist Mode:**
-- `BL_ON` / `BL_OFF` / `BL_STATUS`
-- `BL_ADD aa:bb:cc:dd:ee:ff` / `BL_REMOVE aa:bb:cc:dd:ee:ff` / `BL_CLEAR`
+- `BLON` / `BLOFF` / `BLSTATUS`
+- `BLADD aa:bb:cc:dd:ee:ff` / `BLREMOVE aa:bb:cc:dd:ee:ff` / `BLCLEAR`
 - All commands also accept `BLACKLIST_` prefix
 
 **System:**

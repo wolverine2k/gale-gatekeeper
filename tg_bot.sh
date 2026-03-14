@@ -239,12 +239,12 @@ while true; do
             MSG="${MSG}\`DEXTEND [ID]\` - Extend denial timeout (+30m)\n"
             MSG="${MSG}\`DREVOKE [ID]\` - Approve denied device (+30m)\n\n"
             MSG="${MSG}*Blacklist Mode:*\n"
-            MSG="${MSG}\`BL_ON\` - Enable blacklist mode\n"
-            MSG="${MSG}\`BL_OFF\` - Disable blacklist mode\n"
-            MSG="${MSG}\`BL_STATUS\` - Show blacklist status\n"
-            MSG="${MSG}\`BL_ADD [MAC]\` - Add MAC to blacklist\n"
-            MSG="${MSG}\`BL_REMOVE [MAC]\` - Remove from blacklist\n"
-            MSG="${MSG}\`BL_CLEAR\` - Clear all blacklist entries\n\n"
+            MSG="${MSG}\`BLON\` - Enable blacklist mode\n"
+            MSG="${MSG}\`BLOFF\` - Disable blacklist mode\n"
+            MSG="${MSG}\`BLSTATUS\` - Show blacklist status\n"
+            MSG="${MSG}\`BLADD [MAC]\` - Add MAC to blacklist\n"
+            MSG="${MSG}\`BLREMOVE [MAC]\` - Remove from blacklist\n"
+            MSG="${MSG}\`BLCLEAR\` - Clear all blacklist entries\n\n"
             MSG="${MSG}*System Control:*\n"
             MSG="${MSG}\`ENABLE\` - Enable gatekeeper filtering\n"
             MSG="${MSG}\`DISABLE\` - Disable gatekeeper (emergency)\n"
@@ -452,6 +452,7 @@ EOF
                 # Automatically approve device for 30 minutes
                 nft "add element inet fw4 approved_macs { $TARGET_MAC timeout 30m }"
                 echo "$(date '+%Y-%m-%dT%H:%M:%S') $TARGET_MAC - - denial-revoked-approved-30m" >> "$LOG_FILE"
+                logger -t tg_bot "Denial revoked, approved 30m: $TARGET_MAC"
                 MSG="✅ Removed $TARGET_MAC from denied list and approved for 30 minutes"
             else
                 # Invalid ID (not in current DSTATUS mapping or DSTATUS not run)
@@ -535,6 +536,7 @@ EOF
                 # Add to denied_macs for 30 minutes to suppress reconnect notifications
                 nft "add element inet fw4 denied_macs { $TARGET_MAC timeout 30m }"
                 echo "$(date '+%Y-%m-%dT%H:%M:%S') $TARGET_MAC - - revoked" >> "$LOG_FILE"
+                logger -t tg_bot "Revoked: $TARGET_MAC"
                 MSG="🚫 Revoked access for $TARGET_MAC"
             else
                 # Invalid ID (not in current STATUS mapping or STATUS not run)
@@ -601,7 +603,7 @@ EOF
 
             # Re-sync blacklist MACs (fw4 reload clears all nftables sets)
             nft flush set inet fw4 blacklist_macs 2>/dev/null
-            BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep "\.mac=" | cut -d"'" -f2)
+            BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
             for mac in $BLACKLIST_MACS; do
                 [ -z "$mac" ] && continue
                 nft "add element inet fw4 blacklist_macs { $mac }" 2>/dev/null
@@ -654,17 +656,17 @@ EOF
             > "$NAME_MAP"
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=🗑️ Logs and name cache cleared."
 
-        # === BLACKLIST MODE ON ===
+        # === BLON COMMAND ===
         # Enable blacklist mode - only MACs in blacklist require approval
         # All other MACs are auto-approved with 24-hour timeout
-        elif [ "$CMD" = "BL_ON" ] || [ "$CMD" = "BLACKLIST_ON" ]; then
+        elif [ "$CMD" = "BLON" ] || [ "$CMD" = "BLACKLIST_ON" ]; then
             # Set blacklist mode to enabled in UCI config
             uci set gatekeeper.main.blacklist_mode='1'
             uci commit gatekeeper
 
             # Sync blacklist to nftables (in case it's not synced yet)
             nft flush set inet fw4 blacklist_macs 2>/dev/null
-            BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep "\.mac=" | cut -d"'" -f2)
+            BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
             for mac in $BLACKLIST_MACS; do
                 [ -z "$mac" ] && continue
                 nft "add element inet fw4 blacklist_macs { $mac }" 2>/dev/null
@@ -676,9 +678,9 @@ EOF
             MSG="${MSG}All other devices will be auto-approved for 24 hours."
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
-        # === BLACKLIST MODE OFF ===
+        # === BLOFF COMMAND ===
         # Disable blacklist mode - return to normal behavior (all require approval)
-        elif [ "$CMD" = "BL_OFF" ] || [ "$CMD" = "BLACKLIST_OFF" ]; then
+        elif [ "$CMD" = "BLOFF" ] || [ "$CMD" = "BLACKLIST_OFF" ]; then
             # Set blacklist mode to disabled in UCI config
             uci set gatekeeper.main.blacklist_mode='0'
             uci commit gatekeeper
@@ -688,9 +690,9 @@ EOF
             MSG="${MSG}All devices will require approval (normal mode)."
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
-        # === BLACKLIST STATUS ===
+        # === BLSTATUS COMMAND ===
         # Show blacklist mode status and list all blacklisted MACs
-        elif [ "$CMD" = "BL_STATUS" ] || [ "$CMD" = "BLACKLIST_STATUS" ]; then
+        elif [ "$CMD" = "BLSTATUS" ] || [ "$CMD" = "BLACKLIST_STATUS" ]; then
             # Get blacklist mode status from UCI config
             MODE=$(uci -q get gatekeeper.main.blacklist_mode || echo "0")
             if [ "$MODE" = "1" ]; then
@@ -704,7 +706,7 @@ EOF
             MSG="${MSG}*Blacklisted MACs:*\n"
 
             # Get blacklist from UCI config
-            BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep "\.mac=" | cut -d"'" -f2)
+            BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
             if [ -z "$BLACKLIST_MACS" ]; then
                 MSG="${MSG}_(none)_\n"
             else
@@ -718,45 +720,50 @@ EOF
 
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
-        # === BLACKLIST ADD ===
+        # === BLADD COMMAND ===
         # Add a MAC address to the blacklist
-        # Usage: "BL_ADD aa:bb:cc:dd:ee:ff"
-        elif [ "$CMD" = "BL_ADD" ] || [ "$CMD" = "BLACKLIST_ADD" ]; then
+        # Usage: "BLADD aa:bb:cc:dd:ee:ff"
+        elif [ "$CMD" = "BLADD" ] || [ "$CMD" = "BLACKLIST_ADD" ]; then
             if [ -z "$ARG" ]; then
-                MSG="❌ Usage: BL_ADD <MAC>\nExample: BL_ADD aa:bb:cc:dd:ee:ff"
+                MSG="❌ Usage: BLADD <MAC>\nExample: BLADD aa:bb:cc:dd:ee:ff"
             else
                 # Convert MAC to lowercase for consistency
                 ADD_MAC=$(echo "$ARG" | tr '[:upper:]' '[:lower:]')
 
                 # Validate MAC format (basic check)
                 if echo "$ADD_MAC" | grep -qE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'; then
-                    # Check if blacklist section exists, create if not
-                    if ! uci -q get gatekeeper.blacklist >/dev/null 2>&1; then
-                        uci set gatekeeper.blacklist=blacklist
+                    # Check for duplicate before adding
+                    if nft list set inet fw4 blacklist_macs 2>/dev/null | grep -qi "$ADD_MAC"; then
+                        MSG="ℹ️ \`${ADD_MAC}\` is already in the blacklist"
+                    else
+                        # Check if blacklist section exists, create if not
+                        if ! uci -q get gatekeeper.blacklist >/dev/null 2>&1; then
+                            uci set gatekeeper.blacklist=blacklist
+                        fi
+
+                        # Add to UCI blacklist
+                        uci add_list gatekeeper.blacklist.mac="$ADD_MAC"
+                        uci commit gatekeeper
+
+                        # Add to nftables set
+                        nft "add element inet fw4 blacklist_macs { $ADD_MAC }" 2>/dev/null
+
+                        echo "$(date '+%Y-%m-%dT%H:%M:%S') $ADD_MAC - - bl-added" >> "$LOG_FILE"
+                        MSG="✅ Added to blacklist: \`${ADD_MAC}\`"
+                        logger -t tg_bot "Added $ADD_MAC to blacklist"
                     fi
-
-                    # Add to UCI blacklist
-                    uci add_list gatekeeper.blacklist.mac="$ADD_MAC"
-                    uci commit gatekeeper
-
-                    # Add to nftables set
-                    nft "add element inet fw4 blacklist_macs { $ADD_MAC }" 2>/dev/null
-
-                    echo "$(date '+%Y-%m-%dT%H:%M:%S') $ADD_MAC - - bl-added" >> "$LOG_FILE"
-                    MSG="✅ Added to blacklist: \`${ADD_MAC}\`"
-                    logger -t tg_bot "Added $ADD_MAC to blacklist"
                 else
                     MSG="❌ Invalid MAC format. Use: aa:bb:cc:dd:ee:ff"
                 fi
             fi
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
-        # === BLACKLIST REMOVE ===
+        # === BLREMOVE COMMAND ===
         # Remove a MAC address from the blacklist
-        # Usage: "BL_REMOVE aa:bb:cc:dd:ee:ff"
-        elif [ "$CMD" = "BL_REMOVE" ] || [ "$CMD" = "BLACKLIST_REMOVE" ]; then
+        # Usage: "BLREMOVE aa:bb:cc:dd:ee:ff"
+        elif [ "$CMD" = "BLREMOVE" ] || [ "$CMD" = "BLACKLIST_REMOVE" ]; then
             if [ -z "$ARG" ]; then
-                MSG="❌ Usage: BL_REMOVE <MAC>\nExample: BL_REMOVE aa:bb:cc:dd:ee:ff"
+                MSG="❌ Usage: BLREMOVE <MAC>\nExample: BLREMOVE aa:bb:cc:dd:ee:ff"
             else
                 # Convert MAC to lowercase for consistency
                 REMOVE_MAC=$(echo "$ARG" | tr '[:upper:]' '[:lower:]')
@@ -774,9 +781,9 @@ EOF
             fi
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
-        # === BLACKLIST CLEAR ===
+        # === BLCLEAR COMMAND ===
         # Clear all MACs from the blacklist
-        elif [ "$CMD" = "BL_CLEAR" ] || [ "$CMD" = "BLACKLIST_CLEAR" ]; then
+        elif [ "$CMD" = "BLCLEAR" ] || [ "$CMD" = "BLACKLIST_CLEAR" ]; then
             # Delete and recreate blacklist section in UCI
             uci delete gatekeeper.blacklist 2>/dev/null
             uci set gatekeeper.blacklist=blacklist
