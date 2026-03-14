@@ -79,7 +79,7 @@ start() {
     # Step 6: Iterate through each blacklist MAC and add to firewall set
     for mac in $BLACKLIST_MACS; do
         [ -z "$mac" ] && continue
-        nft add element inet fw4 blacklist_macs { $mac } 2>/dev/null
+        nft "add element inet fw4 blacklist_macs { $mac }" 2>/dev/null
     done
 
     logger -t gatekeeper_init "Blacklist MACs synchronized"

@@ -116,3 +116,12 @@ add rule inet fw4 gatekeeper_forward ether saddr @approved_macs accept
 # counter: Tracks statistics for dropped packets
 add rule inet fw4 gatekeeper_forward iifname "br-lan" counter drop
 EOF
+
+# Repopulate blacklist_macs from UCI on every fw4 reload.
+# This ensures the set survives firewall reloads (e.g. triggered by network
+# interface events that happen after gatekeeper_init has already run at boot).
+BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep "\.mac=" | cut -d"'" -f2)
+for mac in $BLACKLIST_MACS; do
+    [ -z "$mac" ] && continue
+    nft "add element inet fw4 blacklist_macs { $mac }" 2>/dev/null
+done

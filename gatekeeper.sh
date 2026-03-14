@@ -85,6 +85,8 @@ if [ -z "$TOKEN" ] || [ -z "$CHAT_ID" ]; then
     exit 1
 fi
 
+LOG_FILE="/tmp/gatekeeper.log"
+
 # Parse input parameters from ubus event listener
 # ACTION: DHCP event type (add, old, del) - 'add' for new connections
 # MAC: Device MAC address for identification
@@ -140,6 +142,7 @@ if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ] && [ "$BLACKLIST_MODE" = "1" 
         # MAC is NOT in blacklist - auto-approve with 24h timeout
         nft add element inet fw4 approved_macs { $MAC timeout 24h }
         logger -t gatekeeper "Auto-approved (blacklist mode): $MAC ($HOSTNAME) - $IP"
+        echo "$(date '+%Y-%m-%dT%H:%M:%S') $MAC $IP ${HOSTNAME:--} auto-approved-24h" >> "$LOG_FILE"
 
         # Send informational message to Telegram
         MESSAGE="✅ *Auto-Approved* (Blacklist Mode)%0A%0A"
@@ -168,6 +171,9 @@ if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ]; then
     # %0A is URL-encoded newline for Telegram API
     MESSAGE="⚠️ *New Device Connection*%0A*Host:* ${HOSTNAME:-Unknown}%0A*MAC:* $MAC%0A*IP:* $IP"
 
+    # Log the connection event
+    echo "$(date '+%Y-%m-%dT%H:%M:%S') $MAC $IP ${HOSTNAME:--} connected" >> "$LOG_FILE"
+
     # Send Notification via Telegram Bot API
     # curl options: -s silent, -X POST HTTP method, -d POST data
     SEND_RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
@@ -192,6 +198,7 @@ if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ]; then
             # Add MAC to denied list (30 minute timeout)
             # Prevents notification spam and allows retry after timeout
             nft "add element inet fw4 denied_macs { $MAC timeout 30m }"
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') $MAC $IP ${HOSTNAME:--} auto-denied-timeout" >> "$LOG_FILE"
         fi
     ) &  # Run in background to allow immediate script completion
 fi

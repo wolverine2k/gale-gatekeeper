@@ -176,15 +176,17 @@ while true; do
                 nft "add element inet fw4 approved_macs { $MAC timeout 30m }"
                 
                 # Extract hostname from gatekeeper log for display
-                # Log format: timestamp MAC IP hostname
-                H_NAME=$(grep -i "$MAC" "$LOG_FILE" | tail -n 1 | awk '{print $4}')
-                
+                # Log format: TIMESTAMP MAC IP HOSTNAME ACTION  →  field 4 = hostname
+                H_NAME=$(grep -i "^[^ ]* $MAC " "$LOG_FILE" | tail -n 1 | awk '{print $4}')
+                [ "$H_NAME" = "-" ] && H_NAME=""
+
                 # Cache hostname in name map for future STATUS lookups
                 if [ -n "$H_NAME" ]; then
                     # Remove old entry if exists (prevents duplicates)
                     sed -i "/$MAC/d" "$NAME_MAP" 2>/dev/null
                     echo "$MAC=$H_NAME" >> "$NAME_MAP"
                 fi
+                echo "$(date '+%Y-%m-%dT%H:%M:%S') $MAC - ${H_NAME:--} approved" >> "$LOG_FILE"
                 OUT="✅ Approved: ${H_NAME:-$MAC}"
             
             # Process DENY action
@@ -193,6 +195,7 @@ while true; do
                 # 30-minute timeout prevents notification spam for denied devices
                 nft "delete element inet fw4 approved_macs { $MAC }" 2>/dev/null
                 nft "add element inet fw4 denied_macs { $MAC timeout 30m }"
+                echo "$(date '+%Y-%m-%dT%H:%M:%S') $MAC - - denied" >> "$LOG_FILE"
                 OUT="❌ Denied: $MAC"
             fi
 
@@ -423,6 +426,7 @@ EOF
 
                     # Re-add MAC with extended timeout
                     nft "add element inet fw4 denied_macs { $TARGET_MAC timeout ${TOTAL_SECONDS}s }"
+                    echo "$(date '+%Y-%m-%dT%H:%M:%S') $TARGET_MAC - - denial-extended+30m" >> "$LOG_FILE"
                     MSG="⏳ Extended denial timeout for $TARGET_MAC (+30m, now ${TOTAL_SECONDS}s total)"
                 else
                     # MAC not found or already expired
@@ -447,7 +451,7 @@ EOF
 
                 # Automatically approve device for 30 minutes
                 nft "add element inet fw4 approved_macs { $TARGET_MAC timeout 30m }"
-
+                echo "$(date '+%Y-%m-%dT%H:%M:%S') $TARGET_MAC - - denial-revoked-approved-30m" >> "$LOG_FILE"
                 MSG="✅ Removed $TARGET_MAC from denied list and approved for 30 minutes"
             else
                 # Invalid ID (not in current DSTATUS mapping or DSTATUS not run)
@@ -506,6 +510,7 @@ EOF
 
                     # Re-add MAC with extended timeout
                     nft "add element inet fw4 approved_macs { $TARGET_MAC timeout ${TOTAL_SECONDS}s }"
+                    echo "$(date '+%Y-%m-%dT%H:%M:%S') $TARGET_MAC - - extended-${EXTEND_LABEL}" >> "$LOG_FILE"
                     MSG="⏳ Extended access for $TARGET_MAC (${EXTEND_LABEL}, now ${TOTAL_SECONDS}s total)"
                 else
                     # MAC not found or already expired
@@ -529,6 +534,7 @@ EOF
                 nft "delete element inet fw4 approved_macs { $TARGET_MAC }" 2>/dev/null
                 # Add to denied_macs for 30 minutes to suppress reconnect notifications
                 nft "add element inet fw4 denied_macs { $TARGET_MAC timeout 30m }"
+                echo "$(date '+%Y-%m-%dT%H:%M:%S') $TARGET_MAC - - revoked" >> "$LOG_FILE"
                 MSG="🚫 Revoked access for $TARGET_MAC"
             else
                 # Invalid ID (not in current STATUS mapping or STATUS not run)
@@ -540,9 +546,13 @@ EOF
         # Display last 10 entries from gatekeeper activity log
         # Log contains device connection events written by gatekeeper.sh
         elif [ "$CMD" = "LOG" ]; then
-            # Read last 10 log entries and format for Telegram (escape newlines)
-            [ -f "$LOG_FILE" ] && LOGS=$(tail -n 10 "$LOG_FILE" | sed ':a;N;$!ba;s/\n/\\n/g') || LOGS="No logs."
-            
+            # Read last 20 log entries; report empty state if log file absent or empty
+            if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
+                LOGS=$(tail -n 20 "$LOG_FILE" | sed ':a;N;$!ba;s/\n/\\n/g')
+            else
+                LOGS="No logs yet."
+            fi
+
             # Send log entries as monospace code block
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
@@ -585,7 +595,7 @@ EOF
             BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep "\.mac=" | cut -d"'" -f2)
             for mac in $BLACKLIST_MACS; do
                 [ -z "$mac" ] && continue
-                nft add element inet fw4 blacklist_macs { $mac } 2>/dev/null
+                nft "add element inet fw4 blacklist_macs { $mac }" 2>/dev/null
             done
 
             # Verify that filtering was restored by checking if chain exists
@@ -594,6 +604,7 @@ EOF
             else
                 MSG="⚠️ *Warning*\n\nFirewall reload completed but gatekeeper chain not found."
             fi
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - gatekeeper-enabled" >> "$LOG_FILE"
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
@@ -614,6 +625,7 @@ EOF
             else
                 MSG="⚠️ *Warning*\n\nDisable attempted but some rules remain.\n\nYou may need to manually reload firewall."
             fi
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - gatekeeper-disabled" >> "$LOG_FILE"
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
@@ -640,9 +652,10 @@ EOF
             BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep "\.mac=" | cut -d"'" -f2)
             for mac in $BLACKLIST_MACS; do
                 [ -z "$mac" ] && continue
-                nft add element inet fw4 blacklist_macs { $mac } 2>/dev/null
+                nft "add element inet fw4 blacklist_macs { $mac }" 2>/dev/null
             done
 
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - blacklist-mode-on" >> "$LOG_FILE"
             MSG="✅ *Blacklist Mode: ENABLED*\n\n"
             MSG="${MSG}Only devices in the blacklist will require approval.\n"
             MSG="${MSG}All other devices will be auto-approved for 24 hours."
@@ -655,6 +668,7 @@ EOF
             uci set gatekeeper.main.blacklist_mode='0'
             uci commit gatekeeper
 
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - blacklist-mode-off" >> "$LOG_FILE"
             MSG="✅ *Blacklist Mode: DISABLED*\n\n"
             MSG="${MSG}All devices will require approval (normal mode)."
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
@@ -711,8 +725,9 @@ EOF
                     uci commit gatekeeper
 
                     # Add to nftables set
-                    nft add element inet fw4 blacklist_macs { $ADD_MAC } 2>/dev/null
+                    nft "add element inet fw4 blacklist_macs { $ADD_MAC }" 2>/dev/null
 
+                    echo "$(date '+%Y-%m-%dT%H:%M:%S') $ADD_MAC - - bl-added" >> "$LOG_FILE"
                     MSG="✅ Added to blacklist: \`${ADD_MAC}\`"
                     logger -t tg_bot "Added $ADD_MAC to blacklist"
                 else
@@ -736,8 +751,9 @@ EOF
                 uci commit gatekeeper
 
                 # Remove from nftables set (ignore errors if not present)
-                nft delete element inet fw4 blacklist_macs { $REMOVE_MAC } 2>/dev/null
+                nft "delete element inet fw4 blacklist_macs { $REMOVE_MAC }" 2>/dev/null
 
+                echo "$(date '+%Y-%m-%dT%H:%M:%S') $REMOVE_MAC - - bl-removed" >> "$LOG_FILE"
                 MSG="✅ Removed from blacklist: \`${REMOVE_MAC}\`"
                 logger -t tg_bot "Removed $REMOVE_MAC from blacklist"
             fi
