@@ -49,6 +49,11 @@ config gatekeeper 'main'
 	# 1 = ON (only blacklisted MACs require approval, others auto-approved for 24h)
 	option blacklist_mode '0'
 
+	# Disabled flag (managed by ENABLE/DISABLE commands, default: 0)
+	# 0 = gatekeeper active (normal)
+	# 1 = gatekeeper disabled (all traffic passes, set via Telegram DISABLE command)
+	option disabled '0'
+
 # Blacklist MAC addresses
 # When blacklist mode is ON, only these MACs will require approval
 # All other MACs will be auto-approved with 24-hour timeout

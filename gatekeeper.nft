@@ -76,6 +76,11 @@
 # - Manual disable: nft flush chain inet fw4 gatekeeper_forward
 # - Manual enable: fw4 reload
 
+# Check if gatekeeper was disabled via the DISABLE command.
+# This flag persists across fw4 reloads so that automatic firewall restarts
+# (e.g. triggered by network interface events) don't silently re-enable blocking.
+GATEKEEPER_DISABLED=$(uci -q get gatekeeper.main.disabled || echo "0")
+
 # Execute nftables commands inline (using heredoc for readability)
 nft -f - <<EOF
 # 1. Ensure sets exist (idempotent - safe to rerun)
@@ -99,9 +104,12 @@ add chain inet fw4 gatekeeper_forward { type filter hook forward priority -10; p
 # 3. Clean the chain so we don't get duplicate rules on reload
 # Safe to flush even if chain is empty (idempotent)
 flush chain inet fw4 gatekeeper_forward
+EOF
 
-# 4. Apply the Gatekeeper logic (evaluated in order, first match wins)
-
+# 4. Apply the Gatekeeper logic only when not disabled.
+# When disabled (via DISABLE command), leave the chain empty so all traffic passes.
+if [ "$GATEKEEPER_DISABLED" != "1" ]; then
+    nft -f - <<EOF
 # Rule 1: Allow Static VIPs (From DHCP Leases)
 # Permanent devices: static DHCP assignments get immediate access
 add rule inet fw4 gatekeeper_forward ether saddr @static_macs accept
@@ -116,6 +124,18 @@ add rule inet fw4 gatekeeper_forward ether saddr @approved_macs accept
 # counter: Tracks statistics for dropped packets
 add rule inet fw4 gatekeeper_forward iifname "br-lan" counter drop
 EOF
+fi
+
+# Repopulate static_macs from UCI DHCP config on every fw4 reload.
+# gatekeeper_init only runs at boot, so any automatic fw4 reload triggered by
+# network interface events (WAN IP assignment, netifd, etc.) would leave
+# static_macs empty and block trusted devices until a manual SYNC/ENABLE.
+i=0; while SM=$(uci -q get dhcp.@host[$i].mac); do
+    for sm in $SM; do
+        nft "add element inet fw4 static_macs { $sm }" 2>/dev/null
+    done
+    i=$((i+1))
+done
 
 # Repopulate blacklist_macs from UCI on every fw4 reload.
 # This ensures the set survives firewall reloads (e.g. triggered by network

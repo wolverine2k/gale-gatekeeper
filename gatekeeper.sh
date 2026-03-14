@@ -87,6 +87,16 @@ fi
 
 LOG_FILE="/tmp/gatekeeper.log"
 
+# Early exit if gatekeeper has been disabled via the DISABLE command.
+# While disabled the firewall chain is empty so all traffic passes freely —
+# we must not send approval notifications or start auto-deny timers, because
+# the 5-minute timer could fire *after* ENABLE is called and silently add
+# devices to denied_macs, preventing them from ever requesting approval.
+GATEKEEPER_DISABLED=$(uci -q get gatekeeper.main.disabled || echo "0")
+if [ "$GATEKEEPER_DISABLED" = "1" ]; then
+    exit 0
+fi
+
 # Parse input parameters from ubus event listener
 # ACTION: DHCP event type (add, old, del) - 'add' for new connections
 # MAC: Device MAC address for identification

@@ -579,6 +579,15 @@ EOF
         # Re-enable gatekeeper after emergency disable
         # Reloads firewall rules to restore normal filtering
         elif [ "$CMD" = "ENABLE" ]; then
+            # Clear the persistent disabled flag so gatekeeper.nft re-adds
+            # blocking rules on this and all future fw4 reloads.
+            uci set gatekeeper.main.disabled='0'
+            uci commit gatekeeper
+
+            # Clear rate-limiting locks so devices that reconnect immediately
+            # after ENABLE can trigger new approval notifications.
+            rm -f /tmp/dns_locks/* 2>/dev/null
+
             # Reload firewall to restore gatekeeper rules
             # This recreates the gatekeeper_forward chain with all filter rules
             fw4 reload >/dev/null 2>&1
@@ -613,6 +622,12 @@ EOF
         # Emergency disable gatekeeper (global bypass)
         # Allows all LAN→WAN traffic regardless of MAC address
         elif [ "$CMD" = "DISABLE" ]; then
+            # Persist the disabled flag in UCI so that automatic fw4 reloads
+            # (triggered by network interface events) do not silently re-enable
+            # blocking via gatekeeper.nft.
+            uci set gatekeeper.main.disabled='1'
+            uci commit gatekeeper
+
             # Flush the gatekeeper_forward chain to remove all filter rules
             # This effectively disables filtering until ENABLE is called
             # The chain still exists but has no rules, so all traffic passes
