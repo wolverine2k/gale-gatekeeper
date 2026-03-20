@@ -8,7 +8,7 @@ Gatekeeper is a Telegram-based network access control system for OpenWrt routers
 
 ## Core Architecture
 
-The system operates as a 4-stage event pipeline:
+The system operates as a 5-stage event pipeline:
 
 1. **dnsmasq** → Detects DHCP events (new device connections)
 2. **dnsmasq_trigger.sh** → Bridges dnsmasq to ubus (sends ubus event); filters IPv6 — only IPv4 "add" events pass through
@@ -17,11 +17,14 @@ The system operates as a 4-stage event pipeline:
 5. **tg_bot.sh** → Continuous long-polling daemon for Telegram commands and inline button callbacks
 
 **gatekeeper.sh validation order** (checked before sending any notification):
-1. MAC in `static_macs`? → Auto-approve, exit
-2. MAC in `denied_macs`? → Silently exit
-3. MAC in `approved_macs`? → Silently exit
-4. Blacklist mode ON + MAC not in `blacklist_macs`? → Auto-approve with 24h timeout, send info message
-5. Otherwise → Send approval request to Telegram with Approve/Deny buttons + start 5-minute auto-deny background timer
+1. MAC in UCI `dhcp.@host[*].mac`? → `is_static=1`, skip notification (access via static nftables rule)
+2. MAC in `denied_macs` nftables set? → Silently exit
+3. MAC in `approved_macs` nftables set? → Silently exit
+4. `gatekeeper.main.disabled=1`? → Exit immediately (set by DISABLE command; checked first before input parsing)
+5. Blacklist mode ON + MAC not in `blacklist_macs`? → Auto-approve with 24h timeout, send info message
+6. Otherwise → Send approval request to Telegram with Approve/Deny buttons + start 5-minute auto-deny background timer
+
+Note: Step 1 reads UCI directly (not the `static_macs` nftables set). The nftables set is a mirror populated by `gatekeeper_init` and `gatekeeper.nft` on every `fw4 reload`.
 
 ### Firewall Integration (nftables)
 
@@ -35,8 +38,18 @@ Defined in `gatekeeper.nft`, using four nftables sets in the `gatekeeper_forward
 | `blacklist_macs` | none | MACs requiring approval when blacklist mode is ON |
 
 **Emergency Bypass:**
-- `DISABLE`: Flushes `gatekeeper_forward` chain (all traffic allowed immediately, no reboot needed)
-- `ENABLE`: Runs `fw4 reload` (restores all filtering rules)
+- `DISABLE`: Sets `uci set gatekeeper.main.disabled=1` (persists across `fw4` reloads), then flushes `gatekeeper_forward` chain
+- `ENABLE`: Clears `gatekeeper.main.disabled=0`, runs `fw4 reload`, re-syncs static and blacklist MACs
+- `gatekeeper.nft` checks `gatekeeper.main.disabled` on every `fw4 reload` — if set, it creates the chain but leaves it empty so automatic firewall reloads (e.g., WAN IP changes) don't silently re-enable blocking
+
+**Firewall Include Registration** (done once at install):
+```bash
+uci add firewall include
+uci set firewall.@include[-1].path='/etc/gatekeeper/gatekeeper.nft'
+uci set firewall.@include[-1].type='script'
+uci commit firewall
+```
+`gatekeeper.nft` is a shell script (not nft syntax), executed on every `fw4 reload`.
 
 ### Blacklist Mode
 
@@ -91,6 +104,7 @@ State: `uci get gatekeeper.main.blacklist_mode` (0 or 1). MACs: `gatekeeper.blac
 ./deploy.sh 192.168.1.1              # Full deploy + service restart
 ./deploy.sh 192.168.1.1 --dry-run   # Preview only
 ./deploy.sh 192.168.1.1 --no-restart
+./deploy.sh 192.168.1.1 --restart-only   # Only restart services, no file copy
 ./deploy.sh 192.168.1.1 --scripts-only   # Skip config/init files
 ./deploy.sh 192.168.1.1 --config-only
 ```
@@ -192,6 +206,14 @@ Always use `2>/dev/null` on the delete (element may not exist).
 ### Modifying Approval Logic
 
 Always check all four nftables sets before sending a notification (order matters — check `denied_macs` before `approved_macs`). Use `grep -q` for silent exit-code-only matching.
+
+### Session ID Mapping
+
+`STATUS` and `DSTATUS` write fresh `/tmp/mac_map` and `/tmp/denied_mac_map` each time they're called, overwriting previous mappings. IDs from a prior `STATUS` call are invalidated by any subsequent `STATUS` call. `REVOKE` removes from `approved_macs` **and** adds to `denied_macs` for 30 minutes to suppress reconnect notifications.
+
+### Shell Compatibility Note
+
+`gatekeeper.sh` uses `[[ ]]` bash syntax (line 137: `if [[ -z "${MAC// }" ]]`) despite the `#!/bin/sh` shebang. On OpenWrt's BusyBox sh, `[[` is not available — this line relies on the router's shell supporting it (or busybox ash's limited bash compat). Avoid introducing additional bashisms.
 
 ## Configuration
 

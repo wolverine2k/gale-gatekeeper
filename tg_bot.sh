@@ -732,8 +732,10 @@ EOF
 
                 # Validate MAC format (basic check)
                 if echo "$ADD_MAC" | grep -qE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'; then
-                    # Check for duplicate before adding
-                    if nft list set inet fw4 blacklist_macs 2>/dev/null | grep -qi "$ADD_MAC"; then
+                    # Check for duplicate in UCI config (authoritative source; nftables set may be
+                    # empty after reboot if gatekeeper_init hasn't run yet)
+                    EXISTING_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}" | tr '[:upper:]' '[:lower:]')
+                    if echo "$EXISTING_MACS" | grep -qx "$ADD_MAC"; then
                         MSG="ℹ️ \`${ADD_MAC}\` is already in the blacklist"
                     else
                         # Check if blacklist section exists, create if not
