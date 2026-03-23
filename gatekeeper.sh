@@ -87,6 +87,14 @@ fi
 
 LOG_FILE="/tmp/gatekeeper.log"
 
+# curl timeout options — prevent indefinite hangs on network stalls
+CURL_OPTS="--connect-timeout 10 --max-time 30"
+
+# Rotate log to prevent /tmp (tmpfs) exhaustion — keep last 500 lines
+if [ -f "$LOG_FILE" ] && [ "$(wc -l < "$LOG_FILE" 2>/dev/null)" -gt 1000 ]; then
+    tail -n 500 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+fi
+
 # Early exit if gatekeeper has been disabled via the DISABLE command.
 # While disabled the firewall chain is empty so all traffic passes freely —
 # we must not send approval notifications or start auto-deny timers, because
@@ -134,7 +142,7 @@ if nft list set inet fw4 approved_macs | grep -qi "$MAC"; then
 fi
 
 # Step 3: Input validation - Ensure valid MAC provided
-if [[ -z "${MAC// }" ]]; then
+if [ -z "$(echo "$MAC" | tr -d ' ')" ]; then
     exit 0  # Invalid input, nothing to process
 fi
 
@@ -161,7 +169,7 @@ if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ] && [ "$BLACKLIST_MODE" = "1" 
         MESSAGE="${MESSAGE}🔹 *IP:* ${IP}%0A"
         MESSAGE="${MESSAGE}🔹 *Access:* 24 hours"
 
-        curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+        curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
             -d "chat_id=${CHAT_ID}" \
             -d "text=${MESSAGE}" \
             -d "parse_mode=Markdown" > /dev/null
@@ -186,22 +194,31 @@ if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ]; then
 
     # Send Notification via Telegram Bot API
     # curl options: -s silent, -X POST HTTP method, -d POST data
-    SEND_RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+    SEND_RESPONSE=$(curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
          -d "chat_id=$CHAT_ID" -d "text=$MESSAGE" -d "parse_mode=Markdown" -d "reply_markup=$KEYBOARD")
 
     # Extract message ID from response for tracking
     MSG_ID=$(echo "$SEND_RESPONSE" | jq '.result.message_id')
 
     # Step 5: 5 Minute Auto-Deny Timer (background process)
-    # Waits 5 minutes, checks if MAC was added to approved_macs
-    # If not approved, sends timeout message and adds to denied_macs
+    # One timer per MAC — cancel any previous timer before starting a new one.
+    # Without this, rapid reconnects (DHCP renewal, network flap) accumulate
+    # orphaned sleep+curl processes that all fire independently.
+    TIMER_PID_FILE="/tmp/gatekeeper_timer_$(echo "$MAC" | tr -d ':')"
+    if [ -f "$TIMER_PID_FILE" ]; then
+        kill "$(cat "$TIMER_PID_FILE")" 2>/dev/null
+        rm -f "$TIMER_PID_FILE"
+    fi
+
     (
         sleep 300  # Wait 5 minutes
+
+        rm -f "$TIMER_PID_FILE"  # Clean up PID file on natural expiry
 
         # Check if MAC still not in approved list
         if ! nft list set inet fw4 approved_macs | grep -qi "$MAC"; then
             # Update message to show timeout
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
                  -d "chat_id=$CHAT_ID" -d "message_id=$MSG_ID" \
                  -d "text=⌛ *Auto-Denied (Timeout)*%0A$MAC remained unapproved." -d "parse_mode=Markdown"
 
@@ -210,5 +227,6 @@ if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ]; then
             nft "add element inet fw4 denied_macs { $MAC timeout 30m }"
             echo "$(date '+%Y-%m-%dT%H:%M:%S') $MAC $IP ${HOSTNAME:--} auto-denied-timeout" >> "$LOG_FILE"
         fi
-    ) &  # Run in background to allow immediate script completion
+    ) &
+    echo $! > "$TIMER_PID_FILE"  # Store PID so next invocation can cancel this timer
 fi

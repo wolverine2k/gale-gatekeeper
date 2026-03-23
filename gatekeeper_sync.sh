@@ -91,7 +91,7 @@ if [ "$SYNC_MODE" = "blacklist" ] || [ "$SYNC_MODE" = "all" ]; then
 
     # Get all blacklist MACs from UCI config
     # Format: gatekeeper.blacklist.mac='aa:bb:cc:dd:ee:ff'
-    BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep "\.mac=" | cut -d"'" -f2)
+    BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
 
     COUNT=0
     for mac in $BLACKLIST_MACS; do

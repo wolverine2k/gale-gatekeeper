@@ -105,6 +105,15 @@ ubus monitor | while read -r line; do
             # Update timestamp file for rate limiting
             echo "$NOW" > "$LOCK_FILE"
 
+            # Clean up lock files for MACs not seen in over 5 minutes.
+            # Lock files are one-per-MAC and never deleted otherwise, accumulating
+            # indefinitely for transient devices that never reconnect.
+            for _lf in "$LOCK_DIR"/*; do
+                [ -f "$_lf" ] || continue
+                _lf_ts=$(cat "$_lf" 2>/dev/null)
+                [ -n "$_lf_ts" ] && [ $((NOW - _lf_ts)) -gt 300 ] && rm -f "$_lf"
+            done
+
             # 4. Trigger the unconstrained environment for final processing
             logger -t "DNS_LISTENER" "Triggering for $MAC ($HOST) at $IP"
             /usr/bin/gatekeeper.sh "add" "$MAC" "$IP" "$HOST" "$ACTION"

@@ -123,6 +123,12 @@ if [ -z "$TOKEN" ] || [ -z "$CHAT_ID" ]; then
     exit 1
 fi
 
+# curl options applied to all Telegram API calls to prevent indefinite hangs.
+# --connect-timeout: abort if TCP connection not established within 10 seconds.
+# --max-time: hard cap on total transfer time (slightly above Telegram's 30s poll).
+CURL_OPTS="--connect-timeout 10 --max-time 30"
+CURL_POLL_OPTS="--connect-timeout 10 --max-time 60"
+
 # State file paths in /tmp (non-persistent, cleared on reboot)
 LOG_FILE="/tmp/gatekeeper.log"        # Activity logs from gatekeeper.sh
 NAME_MAP="/tmp/mac_names"             # Custom hostname cache (MAC=Name pairs)
@@ -130,20 +136,32 @@ MAP_FILE="/tmp/mac_map"               # Temporary device ID-to-MAC mapping for S
 DENIED_MAP_FILE="/tmp/denied_mac_map" # Temporary device ID-to-MAC mapping for DSTATUS
 OFFSET_FILE="/tmp/tg_offset"          # Telegram update ID tracking
 
-# Load last processed update ID from offset file
-# Starts at 0 if file doesn't exist (first run or post-reboot)
-OFFSET=$(cat "$OFFSET_FILE" 2>/dev/null || echo 0)
-
 # Main event loop: Continuously poll Telegram API for updates
 # Uses long polling with 30-second timeout for efficient real-time updates
 while true; do
+    # Re-read offset from file each iteration. The inner `while read` pipeline
+    # runs in a subshell (BusyBox ash), so variable assignments inside it don't
+    # propagate to this shell. The file is the authoritative offset store.
+    OFFSET=$(cat "$OFFSET_FILE" 2>/dev/null || echo 0)
+
     # Poll Telegram API for new updates with long polling (30s timeout)
     # Long polling reduces server load compared to frequent short requests
-    RESPONSE=$(curl -s "https://api.telegram.org/bot$TOKEN/getUpdates?offset=$OFFSET&timeout=30")
+    RESPONSE=$(curl -s $CURL_POLL_OPTS "https://api.telegram.org/bot$TOKEN/getUpdates?offset=$OFFSET&timeout=30")
     
     # Skip processing if response is empty (connection timeout/error)
     # Sleep briefly and retry to avoid tight loop on network errors
     [ -z "$RESPONSE" ] && sleep 2 && continue
+
+    # Guard against tight loop on bad API responses (e.g. {"ok":false} on auth
+    # errors). RESPONSE is non-empty so the guard above won't fire, but
+    # jq '.result[]' produces no output and the inner loop exits immediately,
+    # causing the outer loop to spin with no delay and hammer the API.
+    echo "$RESPONSE" | jq -e '.result' >/dev/null 2>&1 || { sleep 5; continue; }
+
+    # Rotate log to prevent /tmp (tmpfs) exhaustion — keep last 500 lines
+    if [ -f "$LOG_FILE" ] && [ "$(wc -l < "$LOG_FILE" 2>/dev/null)" -gt 1000 ]; then
+        tail -n 500 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+    fi
 
     # Process each update in the response array
     # jq extracts individual update objects as separate lines for sequential processing
@@ -200,11 +218,11 @@ while true; do
             fi
 
             # Acknowledge callback query (removes loading indicator in Telegram UI)
-            curl -s "https://api.telegram.org/bot$TOKEN/answerCallbackQuery?callback_query_id=$CB_ID" >/dev/null
+            curl -s $CURL_OPTS "https://api.telegram.org/bot$TOKEN/answerCallbackQuery?callback_query_id=$CB_ID" >/dev/null
             
             # Update original message with approval/denial result
             # Replaces interactive buttons with static confirmation message
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" -d "chat_id=$C_ID" -d "message_id=$M_ID" -d "text=$OUT"
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" -d "chat_id=$C_ID" -d "message_id=$M_ID" -d "text=$OUT"
             continue
         fi
 
@@ -255,7 +273,7 @@ while true; do
             MSG="${MSG}\`HELP\` - Show this help message\n\n"
             MSG="${MSG}💡 _Use STATUS or DSTATUS first to get device IDs_"
 
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
@@ -323,7 +341,7 @@ EOF
 
             # Send status message with custom keyboard for quick commands
             # Keyboard provides buttons for common commands (Status, DStatus, Help, etc.)
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\",\"reply_markup\":{\"keyboard\":[[{\"text\":\"Status\"},{\"text\":\"DStatus\"},{\"text\":\"Help\"}],[{\"text\":\"Sync\"},{\"text\":\"Enable\"},{\"text\":\"Disable\"}]],\"resize_keyboard\":true}}"
 
@@ -381,7 +399,7 @@ EOF
             fi
 
             # Send denied devices message with markdown formatting
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
@@ -436,7 +454,7 @@ EOF
                 # Invalid ID (not in current DSTATUS mapping or DSTATUS not run)
                 MSG="❌ Invalid ID. Run DSTATUS first to get denied device IDs."
             fi
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
 
         # === DREVOKE COMMAND ===
         # Remove device from denied list and automatically approve for 30 minutes
@@ -458,7 +476,7 @@ EOF
                 # Invalid ID (not in current DSTATUS mapping or DSTATUS not run)
                 MSG="❌ Invalid ID. Run DSTATUS first to get denied device IDs."
             fi
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
 
         # === EXTEND COMMAND ===
         # Extend network access timeout for a specific guest
@@ -521,7 +539,7 @@ EOF
                 # Invalid ID (not in current STATUS mapping or STATUS not run)
                 MSG="❌ Invalid ID."
             fi
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
 
         # === REVOKE COMMAND ===
         # Immediately revoke network access for a specific guest
@@ -542,7 +560,7 @@ EOF
                 # Invalid ID (not in current STATUS mapping or STATUS not run)
                 MSG="❌ Invalid ID."
             fi
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
 
         # === LOG COMMAND ===
         # Display last 10 entries from gatekeeper activity log
@@ -550,13 +568,13 @@ EOF
         elif [ "$CMD" = "LOG" ]; then
             # Read last 20 log entries; report empty state if log file absent or empty
             if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
-                LOGS=$(tail -n 20 "$LOG_FILE" | sed ':a;N;$!ba;s/\n/\\n/g')
+                LOGS=$(tail -n 20 "$LOG_FILE" | awk '{printf "%s\\n", $0}')
             else
                 LOGS="No logs yet."
             fi
 
             # Send log entries as monospace code block
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"📜 *Recent Logs:*\\n\`$LOGS\`\",\"parse_mode\":\"Markdown\"}"
 
@@ -575,7 +593,7 @@ EOF
             done
             
             # Report number of static leases synchronized
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=🔄 Synced $i static leases."
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=🔄 Synced $i static leases."
 
         # === ENABLE COMMAND ===
         # Re-enable gatekeeper after emergency disable
@@ -616,7 +634,7 @@ EOF
                 MSG="⚠️ *Warning*\n\nFirewall reload completed but gatekeeper chain not found."
             fi
             echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - gatekeeper-enabled" >> "$LOG_FILE"
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
@@ -643,7 +661,7 @@ EOF
                 MSG="⚠️ *Warning*\n\nDisable attempted but some rules remain.\n\nYou may need to manually reload firewall."
             fi
             echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - gatekeeper-disabled" >> "$LOG_FILE"
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
@@ -654,7 +672,7 @@ EOF
             # Truncate log file and name map (preserves files but clears content)
             > "$LOG_FILE"
             > "$NAME_MAP"
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=🗑️ Logs and name cache cleared."
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=🗑️ Logs and name cache cleared."
 
         # === BLON COMMAND ===
         # Enable blacklist mode - only MACs in blacklist require approval
@@ -676,7 +694,7 @@ EOF
             MSG="✅ *Blacklist Mode: ENABLED*\n\n"
             MSG="${MSG}Only devices in the blacklist will require approval.\n"
             MSG="${MSG}All other devices will be auto-approved for 24 hours."
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
         # === BLOFF COMMAND ===
         # Disable blacklist mode - return to normal behavior (all require approval)
@@ -688,7 +706,7 @@ EOF
             echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - blacklist-mode-off" >> "$LOG_FILE"
             MSG="✅ *Blacklist Mode: DISABLED*\n\n"
             MSG="${MSG}All devices will require approval (normal mode)."
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
         # === BLSTATUS COMMAND ===
         # Show blacklist mode status and list all blacklisted MACs
@@ -718,7 +736,7 @@ EOF
                 done
             fi
 
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
         # === BLADD COMMAND ===
         # Add a MAC address to the blacklist
@@ -747,8 +765,9 @@ EOF
                         uci add_list gatekeeper.blacklist.mac="$ADD_MAC"
                         uci commit gatekeeper
 
-                        # Add to nftables set
+                        # Add to nftables set; revoke any existing approval immediately
                         nft "add element inet fw4 blacklist_macs { $ADD_MAC }" 2>/dev/null
+                        nft "delete element inet fw4 approved_macs { $ADD_MAC }" 2>/dev/null
 
                         echo "$(date '+%Y-%m-%dT%H:%M:%S') $ADD_MAC - - bl-added" >> "$LOG_FILE"
                         MSG="✅ Added to blacklist: \`${ADD_MAC}\`"
@@ -758,7 +777,7 @@ EOF
                     MSG="❌ Invalid MAC format. Use: aa:bb:cc:dd:ee:ff"
                 fi
             fi
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
         # === BLREMOVE COMMAND ===
         # Remove a MAC address from the blacklist
@@ -781,7 +800,7 @@ EOF
                 MSG="✅ Removed from blacklist: \`${REMOVE_MAC}\`"
                 logger -t tg_bot "Removed $REMOVE_MAC from blacklist"
             fi
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -H "Content-Type: application/json" -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
 
         # === BLCLEAR COMMAND ===
         # Clear all MACs from the blacklist
@@ -796,11 +815,7 @@ EOF
 
             MSG="✅ Blacklist cleared - all MACs removed"
             logger -t tg_bot "Blacklist cleared"
-            curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
         fi
     done
-    
-    # Reload offset from file after processing batch of updates
-    # Ensures offset persists across loop iterations
-    [ -f "$OFFSET_FILE" ] && OFFSET=$(cat "$OFFSET_FILE")
 done
