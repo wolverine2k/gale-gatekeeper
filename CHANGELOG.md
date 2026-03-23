@@ -34,7 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Automated Deployment**
   - New `deploy.sh` script for automated deployment via SCP
-  - Support for dry-run, config-only, and scripts-only deployment modes
+  - Support for dry-run, config-only, scripts-only, and no-config deployment modes
+  - `--no-config` flag deploys all files while preserving existing router configuration
   - Automatic permission setting and service restart
   - Built-in connectivity testing and verification
   - Color-coded output for better visibility

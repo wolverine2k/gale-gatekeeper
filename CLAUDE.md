@@ -107,6 +107,7 @@ State: `uci get gatekeeper.main.blacklist_mode` (0 or 1). MACs: `gatekeeper.blac
 ./deploy.sh 192.168.1.1 --restart-only   # Only restart services, no file copy
 ./deploy.sh 192.168.1.1 --scripts-only   # Skip config/init files
 ./deploy.sh 192.168.1.1 --config-only
+./deploy.sh 192.168.1.1 --no-config      # Deploy all files except config (preserves existing settings)
 ```
 
 **Quick script update:**

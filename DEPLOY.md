@@ -76,6 +76,14 @@ Useful for quick updates during development:
 ./deploy.sh 192.168.1.1 --scripts-only
 ```
 
+### Deploy everything except the configuration file
+
+Deploys scripts, firewall rules, and init scripts while preserving the existing `/etc/config/gatekeeper` on the router (e.g. to avoid overwriting credentials or custom settings):
+
+```bash
+./deploy.sh 192.168.1.1 --no-config
+```
+
 ---
 
 ## What Gets Deployed

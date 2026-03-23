@@ -11,6 +11,7 @@
 #   --restart-only   Only restart services (no file deployment)
 #   --config-only    Only deploy configuration file
 #   --scripts-only   Only deploy scripts (no config, no init scripts)
+#   --no-config      Deploy everything except the configuration file (preserves existing config)
 #
 # Examples:
 #   ./deploy.sh 192.168.1.1
@@ -33,6 +34,7 @@ RESTART_SERVICES=true
 RESTART_ONLY=false
 CONFIG_ONLY=false
 SCRIPTS_ONLY=false
+NO_CONFIG=false
 
 # Parse arguments
 if [ $# -eq 0 ]; then
@@ -64,6 +66,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --scripts-only)
             SCRIPTS_ONLY=true
+            shift
+            ;;
+        --no-config)
+            NO_CONFIG=true
             shift
             ;;
         *)
@@ -170,7 +176,7 @@ fi
 print_success "Connected to $ROUTER"
 
 # Deploy configuration file
-if [ "$RESTART_ONLY" = false ] && [ "$SCRIPTS_ONLY" = false ]; then
+if [ "$RESTART_ONLY" = false ] && [ "$SCRIPTS_ONLY" = false ] && [ "$NO_CONFIG" = false ]; then
     print_header "Deploying configuration"
     deploy_file "opkg/etc/config/gatekeeper" "/etc/config/gatekeeper" "UCI config file"
 fi

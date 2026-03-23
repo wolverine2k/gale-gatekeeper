@@ -410,6 +410,9 @@ git pull
 # Deploy updates to router
 ./deploy.sh 192.168.1.1
 
+# Deploy without overwriting existing config (preserves token/chat_id/settings)
+./deploy.sh 192.168.1.1 --no-config
+
 # Services will be restarted automatically
 ```
 
