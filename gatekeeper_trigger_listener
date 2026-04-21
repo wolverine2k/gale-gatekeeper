@@ -59,19 +59,33 @@ START=95              # Start position in boot sequence (late boot)
 
 # Main service start function called by procd
 start_service() {
+    # Defensive cleanup — see tg_gatekeeper for the procd ghost-instance race.
+    # The trigger listener is less prone to it (ubus monitor interrupts sh from
+    # read(2) promptly), but symmetric hardening is cheap and prevents a
+    # leaked listener from double-firing events into gatekeeper.sh.
+    killall -KILL gatekeeper_trigger.sh 2>/dev/null
+    sleep 1
+
     procd_open_instance "gatekeeper_trigger_listener"
-    
-    # Command to execute: the event listener script
-    procd_set_param command /bin/sh /usr/bin/gatekeeper_trigger.sh
-    
-    # Automatically restart if service fails (daemon reliability)
+    # gatekeeper_trigger.sh has a proper #!/bin/sh shebang and is +x — invoke
+    # directly instead of through an extra /bin/sh wrapper.
+    procd_set_param command /usr/bin/gatekeeper_trigger.sh
+    # Default term_timeout (~5s) is plenty since ubus monitor's read breaks
+    # out of blocking read(2) on SIGTERM; raise slightly for safety margin.
+    procd_set_param term_timeout 10
     procd_set_param respawn
-    
-    # Enable logging to system log (logread)
     procd_set_param stdout 1
     procd_set_param stderr 1
-    
     procd_close_instance
+}
+
+# Reap any untracked gatekeeper_trigger.sh instances procd may have lost
+# during a past crash/restart race.
+stop_service() {
+    killall -TERM gatekeeper_trigger.sh 2>/dev/null
+    sleep 2
+    killall -KILL gatekeeper_trigger.sh 2>/dev/null
+    return 0
 }
 
 # Service enablement and control commands (for documentation):
