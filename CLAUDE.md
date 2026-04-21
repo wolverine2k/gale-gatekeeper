@@ -11,8 +11,8 @@ Gatekeeper is a Telegram-based network access control system for OpenWrt routers
 The system operates as a 5-stage event pipeline:
 
 1. **dnsmasq** → Detects DHCP events (new device connections)
-2. **dnsmasq_trigger.sh** → Bridges dnsmasq to ubus (sends ubus event); filters IPv6 — only IPv4 "add" events pass through
-3. **gatekeeper_trigger.sh** → Listens to ubus events, implements rate limiting (60s per MAC via `/tmp/dns_locks/`), triggers gatekeeper.sh
+2. **dnsmasq_trigger.sh** → Minimal one-liner: forwards `action/mac/ip/host` from dnsmasq to `ubus send dnsmasq.event`. No filtering happens here.
+3. **gatekeeper_trigger.sh** → `ubus monitor` listener. Filters IPv6 (skips addresses containing `:`), rate-limits 60s per MAC via `/tmp/dns_locks/`, GCs lock files older than 300s on each event, then invokes `gatekeeper.sh` with a hardcoded `"add"` action (original action is passed as $5 but ignored)
 4. **gatekeeper.sh** → Validates device state, sends Telegram notification, implements 5-minute auto-deny timer
 5. **tg_bot.sh** → Continuous long-polling daemon for Telegram commands and inline button callbacks
 
@@ -24,7 +24,7 @@ The system operates as a 5-stage event pipeline:
 5. Blacklist mode ON + MAC not in `blacklist_macs`? → Auto-approve with 24h timeout, send info message
 6. Otherwise → Send approval request to Telegram with Approve/Deny buttons + start 5-minute auto-deny background timer
 
-Note: Step 1 reads UCI directly (not the `static_macs` nftables set). The nftables set is a mirror populated by `gatekeeper_init` and `gatekeeper.nft` on every `fw4 reload`.
+Note: Step 1 reads UCI directly (not the `static_macs` nftables set). The nftables set is a mirror populated by `gatekeeper_init` at boot **and** re-populated by `gatekeeper.nft` on every `fw4 reload` (including reloads triggered by WAN IP changes). The same is true for `blacklist_macs`. This dual-population is deliberate: automatic `fw4 reload` events would otherwise wipe the sets until a manual `SYNC`.
 
 ### Firewall Integration (nftables)
 
@@ -69,7 +69,8 @@ State: `uci get gatekeeper.main.blacklist_mode` (0 or 1). MACs: `gatekeeper.blac
 | `/tmp/mac_names` | Custom hostname cache (MAC=Name, written during approval) |
 | `/tmp/mac_map` | Session device ID→MAC mapping (STATUS/EXTEND/REVOKE) |
 | `/tmp/denied_mac_map` | Session device ID→MAC mapping (DSTATUS/DEXTEND/DREVOKE) |
-| `/tmp/dns_locks/` | Rate limiting timestamps (one file per MAC, no colons) |
+| `/tmp/dns_locks/` | Rate-limit timestamps (one file per MAC, colons stripped). Stale files (>300s) GC'd on every event |
+| `/tmp/gatekeeper_timer_<MAC-no-colons>` | PID of the per-MAC 5-minute auto-deny timer; re-invocation of `gatekeeper.sh` for the same MAC `kill`s any prior timer before starting a new one (prevents orphaned `sleep 300` processes on rapid DHCP flaps) |
 
 ### Hostname Resolution Priority
 
@@ -90,12 +91,11 @@ State: `uci get gatekeeper.main.blacklist_mode` (0 or 1). MACs: `gatekeeper.blac
 | `gatekeeper_init` | Init script — syncs static and blacklist MACs at boot |
 | `tg_gatekeeper` | Init script — procd-managed bot daemon |
 | `gatekeeper_trigger_listener` | Init script — ubus listener daemon |
-| `gatekeeper_sync.h` | Manual MAC sync utility (**note: file is named `.h` but is a shell script**) |
+| `gatekeeper_sync.sh` | Manual sync utility — syncs **both** static and blacklist MACs (accepts `static`, `blacklist`, or `all`) |
 | `deploy.sh` | Automated SCP deployment to router |
-| `opkg/Makefile` | OpenWrt SDK package definition |
+| `.github/workflows/makefile.yml` | CI `.ipk` build (primary delivery path — hand-rolls the archive via `tar` + `ar rcs`, no SDK required) |
+| `opkg/Makefile` | OpenWrt SDK package recipe (alternative build path for feed integration; CI does not use this) |
 | `opkg/etc/config/gatekeeper` | UCI config template |
-
-> **Known naming issue:** The sync script file is `gatekeeper_sync.h` (not `.sh`) in the repo root. `deploy.sh` and GitHub Actions both reference `gatekeeper_sync.sh` — verify this file exists before deploying. `opkg/Makefile` line 62 also references `gatekeeper_sync.h` (correct for the actual filename but installs it as `.sh`).
 
 ## Development Workflow
 
@@ -162,7 +162,8 @@ opkg install gatekeeper_1.0.0-1_all.ipk
 **Device Management:**
 - `STATUS` / `DSTATUS` — List active/denied devices with session IDs
 - `EXTEND ID [hours]` / `REVOKE ID` — Extend (30 min default, or specify hours) or revoke approved device
-- `DEXTEND ID` / `DREVOKE ID` — Extend (30 min) or remove denied device
+- `DEXTEND ID` — Extend denial timeout (+30 min)
+- `DREVOKE ID` — Remove device from denied list **and** auto-approve it for 30 min (not a plain "remove")
 
 **Blacklist Mode:**
 - `BLON` / `BLOFF` / `BLSTATUS`
@@ -202,7 +203,8 @@ Always use `2>/dev/null` on the delete (element may not exist).
 
 1. Define in `gatekeeper.nft` with appropriate flags (`timeout`, `interval`, etc.)
 2. Add boot-time population to `gatekeeper_init`
-3. Update `gatekeeper_sync.h` for manual sync support
+3. Update `gatekeeper_sync.sh` for manual sync support (add a new `SYNC_MODE` branch)
+4. Also update the repopulation block in `gatekeeper.nft` so the set survives automatic `fw4 reload`
 
 ### Modifying Approval Logic
 
@@ -212,9 +214,13 @@ Always check all four nftables sets before sending a notification (order matters
 
 `STATUS` and `DSTATUS` write fresh `/tmp/mac_map` and `/tmp/denied_mac_map` each time they're called, overwriting previous mappings. IDs from a prior `STATUS` call are invalidated by any subsequent `STATUS` call. `REVOKE` removes from `approved_macs` **and** adds to `denied_macs` for 30 minutes to suppress reconnect notifications.
 
+### Log Rotation
+
+Both `gatekeeper.sh` and `tg_bot.sh` self-rotate `/tmp/gatekeeper.log`: when the file exceeds 1000 lines, they truncate to the last 500 (tail + mv). This runs on every invocation / every poll iteration — cheap, but don't rely on log entries older than ~500 events.
+
 ### Shell Compatibility Note
 
-`gatekeeper.sh` uses `[[ ]]` bash syntax (line 137: `if [[ -z "${MAC// }" ]]`) despite the `#!/bin/sh` shebang. On OpenWrt's BusyBox sh, `[[` is not available — this line relies on the router's shell supporting it (or busybox ash's limited bash compat). Avoid introducing additional bashisms.
+All scripts that run on the router (`gatekeeper.sh`, `tg_bot.sh`, `gatekeeper_trigger.sh`, `dnsmasq_trigger.sh`, `gatekeeper_sync.sh`, init scripts, `gatekeeper.nft`) must be POSIX `/bin/sh` compatible — OpenWrt ships BusyBox ash, not bash. **No bashisms**: avoid `[[ ]]`, `${var,,}` / `${var^^}`, arrays, `function` keyword, process substitution `<(...)`. Use `tr 'A-Z' 'a-z'` for case conversion (not `${var,,}`) — this pattern is already used throughout. `deploy.sh` is the one exception (runs on dev machine) and uses `#!/bin/bash` deliberately.
 
 ## Configuration
 

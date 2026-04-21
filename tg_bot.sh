@@ -136,6 +136,25 @@ MAP_FILE="/tmp/mac_map"               # Temporary device ID-to-MAC mapping for S
 DENIED_MAP_FILE="/tmp/denied_mac_map" # Temporary device ID-to-MAC mapping for DSTATUS
 OFFSET_FILE="/tmp/tg_offset"          # Telegram update ID tracking
 
+# Convert an nftables remaining-time string (e.g. "29m59s", "1h2m3s",
+# "1d23h59m59s", "59s") to total seconds on stdout. Always called via
+# $(...) so variable assignments stay in the subshell.
+#
+# The `d` branch is important for timeouts ≥ 24h (blacklist-mode auto-approve,
+# multi-hour EXTEND): without it the day component would be silently dropped
+# and the caller would mis-render or mis-extend the timeout.
+parse_remaining_secs() {
+    t=$1
+    d=0; h=0; m=0; s=0
+    [ -n "$(echo "$t" | grep 'd')" ] && d=$(echo "$t" | sed 's/d.*//; s/[^0-9]//g')
+    hms=$(echo "$t" | sed 's/^[0-9]*d//')
+    [ -n "$(echo "$hms" | grep 'h')" ] && h=$(echo "$hms" | sed 's/h.*//; s/.*[^0-9]//')
+    [ -n "$(echo "$hms" | grep 'm')" ] && m=$(echo "$hms" | sed 's/m.*//; s/.*h//; s/[^0-9]//g')
+    s=$(echo "$hms" | sed 's/s.*//; s/.*m//; s/.*h//; s/[^0-9]//g')
+    [ -z "$s" ] && s=0
+    echo $((d * 86400 + h * 3600 + m * 60 + s))
+}
+
 # Main event loop: Continuously poll Telegram API for updates
 # Uses long polling with 30-second timeout for efficient real-time updates
 while true; do
@@ -309,28 +328,36 @@ while true; do
                 while read -r line; do
                     # Extract MAC address from nftables output using regex
                     M_ADDR=$(echo "$line" | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
-                    
-                    # Extract timeout expiry from nftables output (e.g., "29m59s")
+
+                    # Extract timeout expiry from nftables output (e.g., "29m59s", "1d2h3m4s")
                     M_TIME=$(echo "$line" | sed 's/.*expires //; s/s.*/s/; s/,//g')
+
+                    # Render absolute expiry timestamp alongside relative remaining time.
+                    EXPIRY_TS=$(( $(date +%s) + $(parse_remaining_secs "$M_TIME") ))
+                    EXPIRY_STR=$(date -d "@$EXPIRY_TS" '+%Y-%m-%d %H:%M' 2>/dev/null)
 
                     # Hostname resolution with priority fallback
                     # 1. Custom Name Map (Cached during Approval)
                     H_NAME=$(grep -i "$M_ADDR" "$NAME_MAP" | tail -n 1 | cut -d'=' -f2)
-                    
+
                     # 2. DHCP Leases (Current network hostnames)
                     [ -z "$H_NAME" ] && H_NAME=$(grep -i "$M_ADDR" /tmp/dhcp.leases | awk '{print $4}')
-                    
+
                     # 3. Static UCI Config (Configured static lease hostnames)
                     [ -z "$H_NAME" ] || [ "$H_NAME" = "*" ] && H_NAME=$(uci show dhcp | grep -i "$M_ADDR" | cut -d. -f2 | xargs -I {} uci -q get dhcp.{}.name)
-                    
+
                     # 4. Fallback to "Guest" if no hostname found
                     [ -z "$H_NAME" ] && H_NAME="Guest"
 
                     # Store ID-to-MAC mapping for EXTEND/REVOKE commands
                     echo "$count=$M_ADDR" >> "$MAP_FILE"
-                    
-                    # Format guest entry: ID. Hostname, MAC address, and timeout
-                    MSG="${MSG}${count}. *${H_NAME}*\n   └ \`${M_ADDR}\` (${M_TIME})\n"
+
+                    # Format guest entry: ID. Hostname, MAC address, remaining time, and absolute expiry
+                    if [ -n "$EXPIRY_STR" ]; then
+                        MSG="${MSG}${count}. *${H_NAME}*\n   └ \`${M_ADDR}\` (${M_TIME}, expires ${EXPIRY_STR})\n"
+                    else
+                        MSG="${MSG}${count}. *${H_NAME}*\n   └ \`${M_ADDR}\` (${M_TIME})\n"
+                    fi
                     count=$((count + 1))
                 done <<EOF
 $RAW_LIST
@@ -369,8 +396,12 @@ EOF
                     # Extract MAC address from nftables output using regex
                     M_ADDR=$(echo "$line" | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
 
-                    # Extract timeout expiry from nftables output (e.g., "29m59s")
+                    # Extract timeout expiry from nftables output (e.g., "29m59s", "1d2h3m4s")
                     M_TIME=$(echo "$line" | sed 's/.*expires //; s/s.*/s/; s/,//g')
+
+                    # Render absolute expiry timestamp alongside relative remaining time.
+                    EXPIRY_TS=$(( $(date +%s) + $(parse_remaining_secs "$M_TIME") ))
+                    EXPIRY_STR=$(date -d "@$EXPIRY_TS" '+%Y-%m-%d %H:%M' 2>/dev/null)
 
                     # Hostname resolution with priority fallback
                     # 1. Custom Name Map (Cached during Approval)
@@ -388,8 +419,12 @@ EOF
                     # Store ID-to-MAC mapping for DEXTEND/DREVOKE commands
                     echo "$count=$M_ADDR" >> "$DENIED_MAP_FILE"
 
-                    # Format denied device entry: count. Hostname, MAC address, and timeout
-                    MSG="${MSG}${count}. *${H_NAME}*\n   └ \`${M_ADDR}\` (${M_TIME})\n"
+                    # Format denied device entry: count. Hostname, MAC address, remaining time, and absolute expiry
+                    if [ -n "$EXPIRY_STR" ]; then
+                        MSG="${MSG}${count}. *${H_NAME}*\n   └ \`${M_ADDR}\` (${M_TIME}, expires ${EXPIRY_STR})\n"
+                    else
+                        MSG="${MSG}${count}. *${H_NAME}*\n   └ \`${M_ADDR}\` (${M_TIME})\n"
+                    fi
                     count=$((count + 1))
                 done <<EOF
 $DENIED_LIST
@@ -415,26 +450,9 @@ EOF
                 CURRENT_LINE=$(nft list set inet fw4 denied_macs | grep "$TARGET_MAC" | grep "expires")
 
                 if [ -n "$CURRENT_LINE" ]; then
-                    # Parse remaining time (format: "29m59s", "15m30s", or "59s")
+                    # Parse remaining time (format: "29m59s", "15m30s", "59s", or "1d2h…")
                     TIME_STR=$(echo "$CURRENT_LINE" | sed 's/.*expires //; s/s.*/s/; s/,//g')
-
-                    # Convert to total seconds by parsing hours, minutes, and seconds
-                    HOURS=0
-                    MINUTES=0
-                    SECONDS=0
-
-                    # Extract hours if present (format: Xh)
-                    [ -n "$(echo "$TIME_STR" | grep 'h')" ] && HOURS=$(echo "$TIME_STR" | sed 's/h.*//; s/.*[^0-9]//')
-
-                    # Extract minutes if present (format: Xm)
-                    [ -n "$(echo "$TIME_STR" | grep 'm')" ] && MINUTES=$(echo "$TIME_STR" | sed 's/m.*//; s/.*h//; s/[^0-9]//g')
-
-                    # Extract seconds (format: Xs)
-                    SECONDS=$(echo "$TIME_STR" | sed 's/s.*//; s/.*m//; s/.*h//; s/[^0-9]//g')
-                    [ -z "$SECONDS" ] && SECONDS=0
-
-                    # Calculate current remaining time in seconds
-                    CURRENT_SECONDS=$((HOURS * 3600 + MINUTES * 60 + SECONDS))
+                    CURRENT_SECONDS=$(parse_remaining_secs "$TIME_STR")
 
                     # Calculate new timeout (current + 30 minutes = current + 1800 seconds)
                     TOTAL_SECONDS=$((CURRENT_SECONDS + 1800))
@@ -491,26 +509,9 @@ EOF
                 CURRENT_LINE=$(nft list set inet fw4 approved_macs | grep "$TARGET_MAC" | grep "expires")
 
                 if [ -n "$CURRENT_LINE" ]; then
-                    # Parse remaining time (format: "29m59s", "15m30s", or "59s")
+                    # Parse remaining time (format: "29m59s", "15m30s", "59s", or "1d2h…")
                     TIME_STR=$(echo "$CURRENT_LINE" | sed 's/.*expires //; s/s.*/s/; s/,//g')
-
-                    # Convert to total seconds by parsing hours, minutes, and seconds
-                    HOURS=0
-                    MINUTES=0
-                    SECONDS=0
-
-                    # Extract hours if present (format: Xh)
-                    [ -n "$(echo "$TIME_STR" | grep 'h')" ] && HOURS=$(echo "$TIME_STR" | sed 's/h.*//; s/.*[^0-9]//')
-
-                    # Extract minutes if present (format: Xm)
-                    [ -n "$(echo "$TIME_STR" | grep 'm')" ] && MINUTES=$(echo "$TIME_STR" | sed 's/m.*//; s/.*h//; s/[^0-9]//g')
-
-                    # Extract seconds (format: Xs)
-                    SECONDS=$(echo "$TIME_STR" | sed 's/s.*//; s/.*m//; s/.*h//; s/[^0-9]//g')
-                    [ -z "$SECONDS" ] && SECONDS=0
-
-                    # Calculate current remaining time in seconds
-                    CURRENT_SECONDS=$((HOURS * 3600 + MINUTES * 60 + SECONDS))
+                    CURRENT_SECONDS=$(parse_remaining_secs "$TIME_STR")
 
                     # Determine extension duration: use ARG2 hours if valid, else default 30 minutes
                     if [ -n "$ARG2" ] && echo "$ARG2" | grep -qE '^[0-9]+$' && [ "$ARG2" -gt 0 ]; then

@@ -59,7 +59,7 @@ define Package/gatekeeper/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/tg_bot.sh $(1)/usr/bin/tg_bot.sh
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/gatekeeper_trigger.sh $(1)/usr/bin/gatekeeper_trigger.sh
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/dnsmasq_trigger.sh $(1)/usr/bin/dnsmasq_trigger.sh
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/gatekeeper_sync.h $(1)/usr/bin/gatekeeper_sync.sh
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/gatekeeper_sync.sh $(1)/usr/bin/gatekeeper_sync.sh
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/gatekeeper.nft $(1)/etc/gatekeeper/gatekeeper.nft
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/gatekeeper_init $(1)/etc/init.d/gatekeeper_init
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/tg_gatekeeper $(1)/etc/init.d/tg_gatekeeper
