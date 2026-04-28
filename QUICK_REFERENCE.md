@@ -25,6 +25,8 @@
 | `SCHEDOFF <name>` / `SCHEDON <name>` | Pause/resume schedule |
 | `SCHEDNOTIFY ON\|OFF\|STATUS` | Toggle schedule notifications |
 | `BACKUP [NOSECRETS]` | Send config backup as Telegram file |
+| `RESTORE` (reply to file) | Begin restore from backup file |
+| `YES` (reply to preview) | Confirm pending restore |
 
 ## 🛠️ Common SSH Commands
 

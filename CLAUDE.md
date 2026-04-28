@@ -176,6 +176,7 @@ opkg install gatekeeper_1.0.0-1_all.ipk
 **System:**
 - `HELP`, `LOG`, `SYNC`, `CLEAR`, `ENABLE`, `DISABLE`
 - `BACKUP` / `BACKUP NOSECRETS` — Send a plain-text UCI snapshot of `/etc/config/gatekeeper` plus the static DHCP host entries from `/etc/config/dhcp` to the configured chat as a Telegram document. `NOSECRETS` blanks the bot token and chat id before upload (default includes them). The temp file in `/tmp` is deleted after upload regardless of success or failure.
+- `RESTORE` (as a reply to a backup file message) — Begin restoring config from a backup. The bot validates the file, computes an additive merge plan against current UCI (skip duplicates by MAC for blacklist, by section name for schedules; never touch `token`/`chat_id`), and replies with a preview. Reply `YES` to the preview within 10 minutes to apply. Restore is read-only against UCI until you confirm; failures during apply roll back via `uci revert`.
 
 **Schedules (auto-approve windows):**
 - `SCHEDADD <mac> <days> <start>-<stop> [name]` — Register an auto-approval window. `name` auto-generated if omitted (`sched_<last3octets>_<n>`). `days` = `daily` | `weekdays` | `weekends` | comma-separated `mon,tue,...,sun`. Times in `HH:MM` 24h, router local TZ. `stop ≤ start` = crosses midnight, anchored to the start day.

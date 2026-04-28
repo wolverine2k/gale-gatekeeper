@@ -184,6 +184,7 @@ Send "**STATUS**" to your bot in Telegram. You should receive a status message w
 | `LOG` | Display recent activity logs |
 | `CLEAR` | Clear logs and hostname cache |
 | `BACKUP` / `BACKUP NOSECRETS` | Send a config backup file (UCI text) to the chat. `NOSECRETS` blanks token/chat_id |
+| `RESTORE` (reply to backup file) / `YES` | Restore config from a backup file (additive merge; reply YES within 10 min to confirm) |
 
 ## 🎭 Blacklist Mode Explained
 
