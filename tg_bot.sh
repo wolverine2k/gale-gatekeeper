@@ -431,6 +431,7 @@ while true; do
             MSG="${MSG}*Maintenance:*\n"
             MSG="${MSG}\`LOG\` - View recent activity logs\n"
             MSG="${MSG}\`CLEAR\` - Clear logs and name cache\n"
+            MSG="${MSG}\`BACKUP [NOSECRETS]\` - Send config backup as a Telegram file\n"
             MSG="${MSG}\`HELP\` - Show this help message\n\n"
             MSG="${MSG}💡 _Use STATUS or DSTATUS first to get device IDs_"
 
@@ -1249,6 +1250,80 @@ EOF
             curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+        # === BACKUP COMMAND ===
+        # Generate a UCI-text backup of gatekeeper config + static DHCP hosts,
+        # send it to Telegram as a document, delete the temp file.
+        # Usage: BACKUP            - include token/chat_id
+        #        BACKUP NOSECRETS  - blank out token/chat_id
+        elif [ "$CMD" = "BACKUP" ]; then
+            INCLUDE_SECRETS=1
+            if [ -n "$ARG" ]; then
+                if [ "$(echo "$ARG" | tr 'a-z' 'A-Z')" = "NOSECRETS" ]; then
+                    INCLUDE_SECRETS=0
+                else
+                    MSG="❌ Usage: BACKUP [NOSECRETS]"
+                    curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                         -H "Content-Type: application/json" \
+                         -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                    continue
+                fi
+            fi
+
+            BK_HOST=$(uci -q get system.@system[0].hostname \
+                      || cat /proc/sys/kernel/hostname 2>/dev/null \
+                      || echo openwrt)
+            STAMP=$(date +%Y%m%d-%H%M)
+            BACKUP_FILE="/tmp/gatekeeper-backup-${BK_HOST}-${STAMP}-$$.txt"
+            if [ "$INCLUDE_SECRETS" = "1" ]; then
+                SECRETS_LABEL="yes"
+            else
+                SECRETS_LABEL="no"
+            fi
+
+            # Build the file
+            {
+                echo "# Gatekeeper backup"
+                echo "# Generated:        $(date -Iseconds 2>/dev/null || date)"
+                echo "# Hostname:         $BK_HOST"
+                echo "# Schema:           v1"
+                echo "# Includes secrets: $SECRETS_LABEL"
+                echo "# Source files:"
+                echo "#   /etc/config/gatekeeper"
+                echo "#   /etc/config/dhcp (host entries only)"
+                echo ""
+                echo "# === /etc/config/gatekeeper ==="
+                if [ "$INCLUDE_SECRETS" = "1" ]; then
+                    uci export gatekeeper
+                else
+                    uci export gatekeeper \
+                        | sed -E "s/^([[:space:]]*option (token|chat_id) ).*/\1''/"
+                fi
+                echo ""
+                echo "# === /etc/config/dhcp (host entries only) ==="
+                awk '/^config[[:space:]]/ { in_host = ($2 == "host") } in_host { print }' \
+                    /etc/config/dhcp 2>/dev/null
+            } > "$BACKUP_FILE"
+
+            # Multipart upload via sendDocument
+            CAPTION="Gatekeeper backup from ${BK_HOST} (secrets: ${SECRETS_LABEL})"
+            UPLOAD_RESP=$(curl -s --connect-timeout 10 --max-time 60 \
+                -F "chat_id=$CHAT_ID" \
+                -F "document=@${BACKUP_FILE}" \
+                -F "caption=${CAPTION}" \
+                "https://api.telegram.org/bot$TOKEN/sendDocument")
+
+            if echo "$UPLOAD_RESP" | jq -e '.ok' >/dev/null 2>&1; then
+                logger -t tg_bot "Backup sent: ${BACKUP_FILE} (secrets=${SECRETS_LABEL})"
+                echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - backup-sent-${SECRETS_LABEL}" >> "$LOG_FILE"
+            else
+                MSG="❌ Backup upload failed. Check logs."
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                logger -t tg_bot "Backup upload failed: $UPLOAD_RESP"
+            fi
+
+            rm -f "$BACKUP_FILE"
         fi
     done
 done
