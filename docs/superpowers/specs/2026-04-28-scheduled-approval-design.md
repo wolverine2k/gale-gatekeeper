@@ -258,7 +258,7 @@ schedule's `approved_macs` push short-circuits subsequent gates.
    `mon,tue,wed,thu,fri,sat,sun`.
 3. **Window** matches `^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]-(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$`. Reject
    `start == stop`. Inverted = crosses midnight (allowed).
-4. **Name**, if supplied, matches `^[a-z0-9_]{1,32}$` and is not already used.
+4. **Name**, if supplied, is normalized to lowercase first, then must match `^[a-z0-9_]{1,32}$` and not already exist as a UCI section under `gatekeeper.`.
 5. **Static-lease check** (decision 4d): if the MAC is in any UCI
    `dhcp.@host[*].mac`, prepend warning to the success reply but still create.
 6. Persist the schedule. The UCI write **must explicitly include**

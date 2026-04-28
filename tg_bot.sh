@@ -974,7 +974,7 @@ EOF
         # Usage: SCHEDADD <mac> <days> <start>-<stop> [name]
         elif [ "$CMD" = "SCHEDADD" ]; then
             SCHED_MAC=$(echo "$TEXT" | awk '{print $2}' | tr '[:upper:]' '[:lower:]')
-            SCHED_DAYS=$(echo "$TEXT" | awk '{print $3}' | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+            SCHED_DAYS=$(echo "$TEXT" | awk '{print $3}' | tr '[:upper:]' '[:lower:]')
             SCHED_WIN=$(echo "$TEXT" | awk '{print $4}')
             SCHED_NAME=$(echo "$TEXT" | awk '{print $5}' | tr '[:upper:]' '[:lower:]')
 
