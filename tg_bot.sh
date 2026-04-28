@@ -1059,6 +1059,64 @@ EOF
             curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+
+        # === SCHEDLIST COMMAND ===
+        # List all schedules; optional MAC filter.
+        # Usage: SCHEDLIST           - all schedules
+        #        SCHEDLIST <mac>     - only schedules for that MAC
+        elif [ "$CMD" = "SCHEDLIST" ]; then
+            FILTER_MAC=""
+            if [ -n "$ARG" ]; then
+                FILTER_MAC=$(echo "$ARG" | tr '[:upper:]' '[:lower:]')
+                if ! echo "$FILTER_MAC" | grep -qE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'; then
+                    MSG="❌ Invalid MAC filter. Use: SCHEDLIST [aa:bb:cc:dd:ee:ff]"
+                    curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                         -H "Content-Type: application/json" \
+                         -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                    continue
+                fi
+            fi
+
+            MSG="📅 *Schedules"
+            [ -n "$FILTER_MAC" ] && MSG="${MSG} for ${FILTER_MAC}"
+            MSG="${MSG}:*\n"
+
+            count=0
+            for sec in $(uci show gatekeeper 2>/dev/null \
+                         | sed -n 's/^gatekeeper\.\([^.=]*\)=schedule$/\1/p'); do
+                mac=$(uci -q get "gatekeeper.${sec}.mac" | tr '[:upper:]' '[:lower:]')
+                [ -n "$FILTER_MAC" ] && [ "$mac" != "$FILTER_MAC" ] && continue
+
+                days=$(uci -q get "gatekeeper.${sec}.days")
+                start=$(uci -q get "gatekeeper.${sec}.start")
+                stop=$(uci -q get "gatekeeper.${sec}.stop")
+                label=$(uci -q get "gatekeeper.${sec}.label")
+                enabled=$(uci -q get "gatekeeper.${sec}.enabled" || echo 1)
+
+                count=$((count+1))
+
+                STATE=""
+                if [ "$enabled" != "1" ]; then
+                    STATE=" *(paused)*"
+                elif [ -f "$SCHED_ACTIVE_FILE" ] && grep -q "^${sec} " "$SCHED_ACTIVE_FILE"; then
+                    end_epoch=$(grep "^${sec} " "$SCHED_ACTIVE_FILE" | awk '{print $3}')
+                    end_str=$(date -d "@${end_epoch}" '+%H:%M' 2>/dev/null)
+                    STATE=" ⏰ *active (until ${end_str})*"
+                fi
+
+                MSG="${MSG}\n*${sec}*${STATE}\n   └ \`${mac}\` ${days} ${start}–${stop}"
+                [ -n "$label" ] && MSG="${MSG}\n   _${label}_"
+            done
+
+            if [ "$count" = "0" ]; then
+                MSG="${MSG}\n_No schedules._"
+            else
+                MSG="${MSG}\n\n💡 SCHEDREMOVE <name> | SCHEDOFF <name> | SCHEDON <name>"
+            fi
+
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
         fi
     done
 done
