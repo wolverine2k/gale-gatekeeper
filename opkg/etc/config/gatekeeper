@@ -54,6 +54,13 @@ config gatekeeper 'main'
 	# 1 = gatekeeper disabled (all traffic passes, set via Telegram DISABLE command)
 	option disabled '0'
 
+	# Schedule notify (optional, default: 0)
+	# Controls the optional info message sent when a scheduled auto-approval
+	# fires during a DHCP event for the configured MAC.
+	# 0 = silent, 1 = post info message to chat
+	# Toggle via Telegram: SCHEDNOTIFY ON / OFF / STATUS
+	option schedule_notify '0'
+
 # Blacklist MAC addresses
 # When blacklist mode is ON, only these MACs will require approval
 # All other MACs will be auto-approved with 24-hour timeout
@@ -61,3 +68,31 @@ config gatekeeper 'main'
 config blacklist 'blacklist'
 	# list mac 'aa:bb:cc:dd:ee:ff'
 	# list mac '11:22:33:44:55:66'
+
+# Scheduled auto-approval entries
+#
+# Each `config schedule '<name>'` section defines one auto-approval window
+# for one MAC. Multiple sections per MAC are allowed (e.g. weekday vs.
+# weekend windows). Manage schedules via the Telegram bot:
+#
+#   SCHEDADD  aa:bb:cc:dd:ee:ff weekdays 16:00-20:00 kids_eve
+#   SCHEDLIST
+#   SCHEDREMOVE kids_eve
+#   SCHEDOFF kids_eve   /  SCHEDON kids_eve
+#
+# Section name validation: ^[a-z0-9_]{1,32}$
+# `days`  : daily | weekdays | weekends | comma-separated subset of
+#           mon,tue,wed,thu,fri,sat,sun
+# `start` / `stop` : HH:MM 24h, router local timezone.
+#                    If stop <= start the window crosses midnight, anchored
+#                    to the start day.
+# `enabled` : 1 (default) active, 0 paused via SCHEDOFF.
+#
+# Example (commented out):
+# config schedule 'sched_kids_eve'
+#	option mac     'aa:bb:cc:dd:ee:ff'
+#	option days    'weekdays'
+#	option start   '16:00'
+#	option stop    '20:00'
+#	option label   'Kids tablet evening'
+#	option enabled '1'
