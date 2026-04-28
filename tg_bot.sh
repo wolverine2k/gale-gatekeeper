@@ -1028,6 +1028,37 @@ EOF
             curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+
+        # === SCHEDREMOVE COMMAND ===
+        # Delete a schedule by name.
+        # Usage: SCHEDREMOVE <name>
+        elif [ "$CMD" = "SCHEDREMOVE" ] && [ -n "$ARG" ]; then
+            SCHED_NAME=$(echo "$ARG" | tr '[:upper:]' '[:lower:]')
+            SECTION_TYPE=$(uci -q get "gatekeeper.${SCHED_NAME}")
+            if [ "$SECTION_TYPE" != "schedule" ]; then
+                MSG="❌ No schedule named '${SCHED_NAME}'"
+            else
+                SCHED_MAC=$(uci -q get "gatekeeper.${SCHED_NAME}.mac")
+                # If this schedule was the only thing keeping the MAC in
+                # approved_macs, drop it now so the user sees instant effect.
+                if [ -n "$SCHED_MAC" ] && [ -f "$SCHED_ACTIVE_FILE" ] \
+                   && grep -q "^${SCHED_NAME} " "$SCHED_ACTIVE_FILE"; then
+                    nft "delete element inet fw4 approved_macs { $SCHED_MAC }" 2>/dev/null
+                fi
+                uci delete "gatekeeper.${SCHED_NAME}" 2>/dev/null
+                if uci commit gatekeeper; then
+                    scheduler_tick
+                    MSG="🗑️ Schedule *${SCHED_NAME}* removed."
+                    echo "$(date '+%Y-%m-%dT%H:%M:%S') ${SCHED_MAC:--} - - sched-removed-${SCHED_NAME}" >> "$LOG_FILE"
+                    logger -t tg_bot "Schedule removed: ${SCHED_NAME}"
+                else
+                    uci revert gatekeeper 2>/dev/null
+                    MSG="❌ Failed to remove schedule (UCI commit error)"
+                fi
+            fi
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
         fi
     done
 done
