@@ -328,6 +328,14 @@ restore_build_plan() {
                         pv_bl_present="${pv_bl_present}\n• ${mac_lc}"
                         bl_present_count=$((bl_present_count+1))
                     else
+                        # Seed the parent section idempotently on the first
+                        # add_list — restore onto a fresh router (where
+                        # gatekeeper_init / BLADD / BLON have never run) would
+                        # otherwise hit "Entry not found" on add_list.
+                        if [ "$bl_added_count" = "0" ]; then
+                            echo "uci set gatekeeper.blacklist=blacklist" >> "$plan"
+                            plan_count=$((plan_count+1))
+                        fi
                         echo "uci add_list gatekeeper.blacklist.mac='${mac_lc}'" >> "$plan"
                         plan_count=$((plan_count+1))
                         bl_added_count=$((bl_added_count+1))
@@ -1633,7 +1641,13 @@ EOF
             # Send preview, capture the new message_id, persist pending state.
             PREVIEW_BODY=$(printf '🔄 Restore preview from \`%s\`\n\n' "${REPLY_DOC_NAME:-unknown}")
             PREVIEW_BODY="${PREVIEW_BODY}$(cat "$RESTORE_PREVIEW")"
-            PREVIEW_BODY="${PREVIEW_BODY}\nReply YES (within 10 minutes) to apply."
+            # Real newline before the trailing prompt: PREVIEW_BODY is fed to
+            # `jq -n --arg`, which JSON-encodes its input. A literal "\n" two-char
+            # sequence here would survive jq as "\\n" in the JSON and render in
+            # Telegram as literal backslash-n. A real LF is JSON-encoded to "\n"
+            # which Telegram renders as a newline.
+            PREVIEW_BODY="${PREVIEW_BODY}
+Reply YES (within 10 minutes) to apply."
             PREVIEW_PAYLOAD=$(jq -n --arg c "$CHAT_ID" --arg t "$PREVIEW_BODY" \
                 '{chat_id: $c, text: $t, parse_mode: "Markdown"}')
             PREVIEW_RESP=$(curl -s $CURL_OPTS -X POST \
