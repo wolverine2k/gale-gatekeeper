@@ -1004,7 +1004,16 @@ EOF
                         SCHED_NAME="sched_${SUFFIX}_${n}"
                         NAME_VALID=1
                     elif ! echo "$SCHED_NAME" | grep -qE '^[a-z0-9_]{1,32}$'; then
-                        MSG="❌ Invalid name. Use 1-32 chars of [a-z0-9_]"
+                        # If hyphens are the only problem, suggest the
+                        # underscore version. UCI section names do not allow
+                        # hyphens, so we cannot just accept them silently.
+                        SUGGESTED=$(echo "$SCHED_NAME" | tr '-' '_')
+                        if [ "$SUGGESTED" != "$SCHED_NAME" ] \
+                           && echo "$SUGGESTED" | grep -qE '^[a-z0-9_]{1,32}$'; then
+                            MSG="❌ Invalid name \`${SCHED_NAME}\` (UCI section names don't allow hyphens). Try: \`${SUGGESTED}\`"
+                        else
+                            MSG="❌ Invalid name \`${SCHED_NAME}\`. Use 1-32 chars of [a-z0-9_]"
+                        fi
                         NAME_VALID=0
                     elif uci -q get "gatekeeper.${SCHED_NAME}" >/dev/null 2>&1; then
                         MSG="❌ Schedule '${SCHED_NAME}' already exists. Use SCHEDREMOVE first."
