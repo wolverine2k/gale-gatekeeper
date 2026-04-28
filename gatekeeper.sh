@@ -272,7 +272,7 @@ if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ]; then
         REMAINING=$(( SCHED_END - NOW_TS ))
         if [ "$REMAINING" -ge 60 ]; then
             nft "delete element inet fw4 approved_macs { $MAC }" 2>/dev/null
-            nft "add element inet fw4 approved_macs { $MAC timeout ${REMAINING}s }"
+            nft "add element inet fw4 approved_macs { $MAC timeout ${REMAINING}s }" 2>/dev/null
             logger -t gatekeeper "Auto-approved (schedule): $MAC ($HOSTNAME) - $IP, ${REMAINING}s"
             echo "$(date '+%Y-%m-%dT%H:%M:%S') $MAC $IP ${HOSTNAME:--} schedule-approved-${REMAINING}s" >> "$LOG_FILE"
 
