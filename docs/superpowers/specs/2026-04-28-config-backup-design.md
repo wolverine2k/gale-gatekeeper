@@ -195,7 +195,7 @@ flips from `Includes secrets: yes` → `no`.
         elif [ "$CMD" = "BACKUP" ]; then
             INCLUDE_SECRETS=1
             if [ -n "$ARG" ]; then
-                if [ "$(echo "$ARG" | tr '[:lower:]' '[:upper:]')" = "NOSECRETS" ]; then
+                if [ "$(echo "$ARG" | tr 'a-z' 'A-Z')" = "NOSECRETS" ]; then
                     INCLUDE_SECRETS=0
                 else
                     MSG="❌ Usage: BACKUP [NOSECRETS]"

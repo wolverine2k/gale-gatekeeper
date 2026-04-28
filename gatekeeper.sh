@@ -136,11 +136,11 @@ window_active_now() {
 # Returns the *latest* end-epoch across all enabled schedules whose mac equals
 # $1 and whose window is active right now. Empty stdout = no active schedule.
 check_active_schedule_for_mac() {
-    target_mac=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+    target_mac=$(echo "$1" | tr 'A-Z' 'a-z')
     [ -n "$target_mac" ] || return 0
     [ "$(date +%Y)" -ge 2024 ] || return 0   # NTP guard
 
-    today_dow=$(date +%a | tr '[:upper:]' '[:lower:]')
+    today_dow=$(date +%a | tr 'A-Z' 'a-z')
     now_hm=$(date +%H:%M)
     best_end=""
 
@@ -149,7 +149,7 @@ check_active_schedule_for_mac() {
         enabled=$(uci -q get "gatekeeper.${sec}.enabled" || echo 1)
         [ "$enabled" = "1" ] || continue
 
-        mac=$(uci -q get "gatekeeper.${sec}.mac" | tr '[:upper:]' '[:lower:]')
+        mac=$(uci -q get "gatekeeper.${sec}.mac" | tr 'A-Z' 'a-z')
         [ "$mac" = "$target_mac" ] || continue
 
         days=$(uci -q get "gatekeeper.${sec}.days")

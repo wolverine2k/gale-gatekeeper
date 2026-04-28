@@ -393,7 +393,7 @@ scheduler_tick() {
     fi
 
     NOW_EPOCH=$(date +%s)
-    DOW=$(date +%a | tr '[:upper:]' '[:lower:]')
+    DOW=$(date +%a | tr 'A-Z' 'a-z')
     HM=$(date +%H:%M)
 
     : > "${SCHED_ACTIVE_FILE}.tmp"
@@ -404,7 +404,7 @@ scheduler_tick() {
         enabled=$(uci -q get "gatekeeper.${sec}.enabled" || echo 1)
         [ "$enabled" = "1" ] || continue
 
-        mac=$(uci -q get "gatekeeper.${sec}.mac" | tr '[:upper:]' '[:lower:]')
+        mac=$(uci -q get "gatekeeper.${sec}.mac" | tr 'A-Z' 'a-z')
         days=$(uci -q get "gatekeeper.${sec}.days")
         start=$(uci -q get "gatekeeper.${sec}.start")
         stop=$(uci -q get "gatekeeper.${sec}.stop")
@@ -508,10 +508,10 @@ Locate the existing `BLCLEAR` handler in `tg_bot.sh` (the last handler in the ch
         # Add a scheduled auto-approval window.
         # Usage: SCHEDADD <mac> <days> <start>-<stop> [name]
         elif [ "$CMD" = "SCHEDADD" ]; then
-            SCHED_MAC=$(echo "$TEXT" | awk '{print $2}' | tr '[:upper:]' '[:lower:]')
-            SCHED_DAYS=$(echo "$TEXT" | awk '{print $3}' | tr '[:upper:]' '[:lower:]')
+            SCHED_MAC=$(echo "$TEXT" | awk '{print $2}' | tr 'A-Z' 'a-z')
+            SCHED_DAYS=$(echo "$TEXT" | awk '{print $3}' | tr 'A-Z' 'a-z')
             SCHED_WIN=$(echo "$TEXT" | awk '{print $4}')
-            SCHED_NAME=$(echo "$TEXT" | awk '{print $5}' | tr '[:upper:]' '[:lower:]')
+            SCHED_NAME=$(echo "$TEXT" | awk '{print $5}' | tr 'A-Z' 'a-z')
 
             # Validate MAC
             if ! echo "$SCHED_MAC" | grep -qE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'; then
@@ -550,7 +550,7 @@ Locate the existing `BLCLEAR` handler in `tg_bot.sh` (the last handler in the ch
 
                     if [ "$NAME_VALID" = "1" ]; then
                         # Static-lease check (warn-but-allow per decision 4d)
-                        STATIC_LEASES=$(uci show dhcp 2>/dev/null | grep "\.mac=" | awk -F"='" '{print $2}' | tr -d "'" | tr '[:upper:]' '[:lower:]')
+                        STATIC_LEASES=$(uci show dhcp 2>/dev/null | grep "\.mac=" | awk -F"='" '{print $2}' | tr -d "'" | tr 'A-Z' 'a-z')
                         WARN=""
                         for sm in $STATIC_LEASES; do
                             if [ "$sm" = "$SCHED_MAC" ]; then
@@ -626,7 +626,7 @@ In `tg_bot.sh`, immediately after the SCHEDADD `elif` block from Task 5, insert:
         # Delete a schedule by name.
         # Usage: SCHEDREMOVE <name>
         elif [ "$CMD" = "SCHEDREMOVE" ] && [ -n "$ARG" ]; then
-            SCHED_NAME=$(echo "$ARG" | tr '[:upper:]' '[:lower:]')
+            SCHED_NAME=$(echo "$ARG" | tr 'A-Z' 'a-z')
             SECTION_TYPE=$(uci -q get "gatekeeper.${SCHED_NAME}")
             if [ "$SECTION_TYPE" != "schedule" ]; then
                 MSG="❌ No schedule named '${SCHED_NAME}'"
@@ -690,7 +690,7 @@ In `tg_bot.sh`, immediately after the SCHEDREMOVE block, insert:
         elif [ "$CMD" = "SCHEDLIST" ]; then
             FILTER_MAC=""
             if [ -n "$ARG" ]; then
-                FILTER_MAC=$(echo "$ARG" | tr '[:upper:]' '[:lower:]')
+                FILTER_MAC=$(echo "$ARG" | tr 'A-Z' 'a-z')
                 if ! echo "$FILTER_MAC" | grep -qE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'; then
                     MSG="❌ Invalid MAC filter. Use: SCHEDLIST [aa:bb:cc:dd:ee:ff]"
                     curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
@@ -707,7 +707,7 @@ In `tg_bot.sh`, immediately after the SCHEDREMOVE block, insert:
             count=0
             for sec in $(uci show gatekeeper 2>/dev/null \
                          | sed -n 's/^gatekeeper\.\([^.=]*\)=schedule$/\1/p'); do
-                mac=$(uci -q get "gatekeeper.${sec}.mac" | tr '[:upper:]' '[:lower:]')
+                mac=$(uci -q get "gatekeeper.${sec}.mac" | tr 'A-Z' 'a-z')
                 [ -n "$FILTER_MAC" ] && [ "$mac" != "$FILTER_MAC" ] && continue
 
                 days=$(uci -q get "gatekeeper.${sec}.days")
@@ -775,7 +775,7 @@ In `tg_bot.sh`, immediately after the SCHEDLIST block, insert:
         # Show full details of one schedule.
         # Usage: SCHEDSHOW <name>
         elif [ "$CMD" = "SCHEDSHOW" ] && [ -n "$ARG" ]; then
-            SCHED_NAME=$(echo "$ARG" | tr '[:upper:]' '[:lower:]')
+            SCHED_NAME=$(echo "$ARG" | tr 'A-Z' 'a-z')
             SECTION_TYPE=$(uci -q get "gatekeeper.${SCHED_NAME}")
             if [ "$SECTION_TYPE" != "schedule" ]; then
                 MSG="❌ No schedule named '${SCHED_NAME}'"
@@ -842,7 +842,7 @@ In `tg_bot.sh`, immediately after the SCHEDSHOW block, insert:
         # Toggle a schedule's enabled flag. SCHEDOFF pauses (window pops on next tick);
         # SCHEDON resumes (window pushes on next tick if currently in time-range).
         elif { [ "$CMD" = "SCHEDOFF" ] || [ "$CMD" = "SCHEDON" ]; } && [ -n "$ARG" ]; then
-            SCHED_NAME=$(echo "$ARG" | tr '[:upper:]' '[:lower:]')
+            SCHED_NAME=$(echo "$ARG" | tr 'A-Z' 'a-z')
             SECTION_TYPE=$(uci -q get "gatekeeper.${SCHED_NAME}")
             if [ "$SECTION_TYPE" != "schedule" ]; then
                 MSG="❌ No schedule named '${SCHED_NAME}'"
@@ -903,7 +903,7 @@ In `tg_bot.sh`, immediately after the SCHEDOFF/SCHEDON block, insert:
         # Toggle the optional info-message on schedule auto-approve.
         # Usage: SCHEDNOTIFY ON | OFF | STATUS
         elif [ "$CMD" = "SCHEDNOTIFY" ] && [ -n "$ARG" ]; then
-            SUB=$(echo "$ARG" | tr '[:lower:]' '[:upper:]')
+            SUB=$(echo "$ARG" | tr 'a-z' 'A-Z')
             case "$SUB" in
                 ON)
                     uci set gatekeeper.main.schedule_notify=1
@@ -1121,11 +1121,11 @@ window_active_now() {
 # Returns the *latest* end-epoch across all enabled schedules whose mac equals
 # $1 and whose window is active right now. Empty stdout = no active schedule.
 check_active_schedule_for_mac() {
-    target_mac=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+    target_mac=$(echo "$1" | tr 'A-Z' 'a-z')
     [ -n "$target_mac" ] || return 0
     [ "$(date +%Y)" -ge 2024 ] || return 0   # NTP guard
 
-    today_dow=$(date +%a | tr '[:upper:]' '[:lower:]')
+    today_dow=$(date +%a | tr 'A-Z' 'a-z')
     now_hm=$(date +%H:%M)
     best_end=""
 
@@ -1134,7 +1134,7 @@ check_active_schedule_for_mac() {
         enabled=$(uci -q get "gatekeeper.${sec}.enabled" || echo 1)
         [ "$enabled" = "1" ] || continue
 
-        mac=$(uci -q get "gatekeeper.${sec}.mac" | tr '[:upper:]' '[:lower:]')
+        mac=$(uci -q get "gatekeeper.${sec}.mac" | tr 'A-Z' 'a-z')
         [ "$mac" = "$target_mac" ] || continue
 
         days=$(uci -q get "gatekeeper.${sec}.days")
