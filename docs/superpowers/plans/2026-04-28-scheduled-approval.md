@@ -521,7 +521,7 @@ Locate the existing `BLCLEAR` handler in `tg_bot.sh` (the last handler in the ch
                    || echo "$SCHED_DAYS" | grep -qE '^(mon|tue|wed|thu|fri|sat|sun)(,(mon|tue|wed|thu|fri|sat|sun))*$'; }; then
                 MSG="❌ Invalid days. Use: daily | weekdays | weekends | mon,tue,wed,thu,fri,sat,sun"
             # Validate window
-            elif ! echo "$SCHED_WIN" | grep -qE '^[0-2][0-9]:[0-5][0-9]-[0-2][0-9]:[0-5][0-9]$'; then
+            elif ! echo "$SCHED_WIN" | grep -qE '^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]-(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$'; then
                 MSG="❌ Invalid window. Use: HH:MM-HH:MM (24h, e.g. 16:00-20:00)"
             else
                 SCHED_START=${SCHED_WIN%-*}

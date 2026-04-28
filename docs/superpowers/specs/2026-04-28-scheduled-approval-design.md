@@ -256,7 +256,7 @@ schedule's `approved_macs` push short-circuits subsequent gates.
 1. **MAC** matches `^([0-9a-f]{2}:){5}[0-9a-f]{2}$` (lowercased before storage).
 2. **Days** is `daily` / `weekdays` / `weekends` / comma-separated subset of
    `mon,tue,wed,thu,fri,sat,sun`.
-3. **Window** matches `^[0-2][0-9]:[0-5][0-9]-[0-2][0-9]:[0-5][0-9]$`. Reject
+3. **Window** matches `^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]-(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$`. Reject
    `start == stop`. Inverted = crosses midnight (allowed).
 4. **Name**, if supplied, matches `^[a-z0-9_]{1,32}$` and is not already used.
 5. **Static-lease check** (decision 4d): if the MAC is in any UCI
