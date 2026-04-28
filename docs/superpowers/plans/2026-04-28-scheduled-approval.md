@@ -295,7 +295,7 @@ assert_eq "mwf 17:00 thu" "$(is_active "$(window_active_now mon,wed,fri 16:00 18
 sh tests/test_schedule_helpers.sh
 ```
 
-Expected last line: `PASS=24 FAIL=0` (6 from Task 2 + 4 hm_to_min + 14 window_active_now = 24). Exit code 0.
+Expected last line: `PASS=28 FAIL=0` (6 from Task 2 + 4 hm_to_min + 18 window_active_now/is_active = 28). Exit code 0.
 
 If `date -d "yesterday"` fails on macOS (BSD `date`), substitute `gdate` from `coreutils`: `brew install coreutils`, then `alias date=gdate` in the shell or run via `PATH=/opt/homebrew/opt/coreutils/libexec/gnubin:$PATH sh tests/test_schedule_helpers.sh`. BusyBox `date -d` on the router supports the GNU syntax used here.
 
@@ -1289,7 +1289,7 @@ Deploy to the router and walk through the scenarios from the spec's testing plan
 sh tests/test_schedule_helpers.sh
 ```
 
-Expected last line: `PASS=24 FAIL=0`. Exit code 0. Fix any failures before deploying.
+Expected last line: `PASS=28 FAIL=0`. Exit code 0. Fix any failures before deploying.
 
 - [ ] **Step 2: Deploy to router**
 

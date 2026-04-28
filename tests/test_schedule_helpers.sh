@@ -86,7 +86,8 @@ window_active_now() {
     fi
 }
 
-# Helper: turn an end-epoch (or empty) into ACTIVE / inactive for asserts.
+# Test-only helper: turn an end-epoch (or empty) into ACTIVE / inactive for asserts.
+# Not part of the three-copy contract — stays in this file only.
 is_active() {
     if [ -n "$1" ]; then echo "ACTIVE"; else echo "inactive"; fi
 }
