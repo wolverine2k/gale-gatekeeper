@@ -87,6 +87,86 @@ fi
 
 LOG_FILE="/tmp/gatekeeper.log"
 
+# Schedule helpers — kept identical to copies in tg_bot.sh and the
+# unit-test file tests/test_schedule_helpers.sh. When you change one,
+# change all three.
+expand_days() {
+    case "$1" in
+        daily)    echo "mon tue wed thu fri sat sun" ;;
+        weekdays) echo "mon tue wed thu fri" ;;
+        weekends) echo "sat sun" ;;
+        *)        echo "$1" | tr ',' ' ' ;;
+    esac
+}
+
+hm_to_min() {
+    echo "$1" | awk -F: '{print $1 * 60 + $2}'
+}
+
+window_active_now() {
+    days="$1"; start="$2"; stop="$3"; today_dow="$4"; now_hm="$5"
+    expanded=$(expand_days "$days")
+    start_m=$(hm_to_min "$start")
+    stop_m=$(hm_to_min "$stop")
+    now_m=$(hm_to_min "$now_hm")
+
+    if [ "$start_m" -lt "$stop_m" ]; then
+        # Same-day window
+        echo "$expanded" | tr ' ' '\n' | grep -qx "$today_dow" || return 0
+        [ "$now_m" -ge "$start_m" ] || return 0
+        [ "$now_m" -lt "$stop_m" ] || return 0
+        date -d "today $stop" +%s
+    else
+        # Cross-midnight: today $start -> tomorrow $stop
+        # Derive yesterday from today_dow (no system clock dependency)
+        yesterday_dow=$(echo "$today_dow" | awk '
+            BEGIN { split("sun mon tue wed thu fri sat", d) }
+            { for (i=1;i<=7;i++) if (d[i]==$1) { print d[(i+5)%7+1]; exit } }
+        ')
+        if echo "$expanded" | tr ' ' '\n' | grep -qx "$today_dow" \
+           && [ "$now_m" -ge "$start_m" ]; then
+            date -d "tomorrow $stop" +%s
+        elif echo "$expanded" | tr ' ' '\n' | grep -qx "$yesterday_dow" \
+             && [ "$now_m" -lt "$stop_m" ]; then
+            date -d "today $stop" +%s
+        fi
+    fi
+}
+
+# Returns the *latest* end-epoch across all enabled schedules whose mac equals
+# $1 and whose window is active right now. Empty stdout = no active schedule.
+check_active_schedule_for_mac() {
+    target_mac=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+    [ -n "$target_mac" ] || return 0
+    [ "$(date +%Y)" -ge 2024 ] || return 0   # NTP guard
+
+    today_dow=$(date +%a | tr '[:upper:]' '[:lower:]')
+    now_hm=$(date +%H:%M)
+    best_end=""
+
+    for sec in $(uci show gatekeeper 2>/dev/null \
+                 | sed -n 's/^gatekeeper\.\([^.=]*\)=schedule$/\1/p'); do
+        enabled=$(uci -q get "gatekeeper.${sec}.enabled" || echo 1)
+        [ "$enabled" = "1" ] || continue
+
+        mac=$(uci -q get "gatekeeper.${sec}.mac" | tr '[:upper:]' '[:lower:]')
+        [ "$mac" = "$target_mac" ] || continue
+
+        days=$(uci -q get "gatekeeper.${sec}.days")
+        start=$(uci -q get "gatekeeper.${sec}.start")
+        stop=$(uci -q get "gatekeeper.${sec}.stop")
+        [ -n "$days" ] && [ -n "$start" ] && [ -n "$stop" ] || continue
+
+        end_epoch=$(window_active_now "$days" "$start" "$stop" "$today_dow" "$now_hm")
+        [ -n "$end_epoch" ] || continue
+
+        if [ -z "$best_end" ] || [ "$end_epoch" -gt "$best_end" ]; then
+            best_end=$end_epoch
+        fi
+    done
+    [ -n "$best_end" ] && echo "$best_end"
+}
+
 # curl timeout options — prevent indefinite hangs on network stalls
 CURL_OPTS="--connect-timeout 10 --max-time 30"
 
@@ -177,6 +257,41 @@ if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ] && [ "$BLACKLIST_MODE" = "1" 
         exit 0  # Done - no approval needed
     fi
     # MAC is in blacklist - fall through to normal approval request below
+fi
+
+# Step 3.6: Active schedule auto-approve (hybrid catch for mid-window DHCP).
+# A scheduled MAC connecting inside its window is silently auto-approved
+# until the window's end. Decisions:
+#   - Static lease (step 1) wins over schedules.
+#   - denied_macs (step 2) wins over schedules.
+#   - Schedule wins over the blacklist gate.
+if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ]; then
+    SCHED_END=$(check_active_schedule_for_mac "$MAC")
+    if [ -n "$SCHED_END" ]; then
+        NOW_TS=$(date +%s)
+        REMAINING=$(( SCHED_END - NOW_TS ))
+        if [ "$REMAINING" -ge 60 ]; then
+            nft "delete element inet fw4 approved_macs { $MAC }" 2>/dev/null
+            nft "add element inet fw4 approved_macs { $MAC timeout ${REMAINING}s }"
+            logger -t gatekeeper "Auto-approved (schedule): $MAC ($HOSTNAME) - $IP, ${REMAINING}s"
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') $MAC $IP ${HOSTNAME:--} schedule-approved-${REMAINING}s" >> "$LOG_FILE"
+
+            SN=$(uci -q get gatekeeper.main.schedule_notify || echo 0)
+            if [ "$SN" = "1" ]; then
+                EXPIRY_STR=$(date -d "@${SCHED_END}" '+%Y-%m-%d %H:%M' 2>/dev/null)
+                MESSAGE="✅ *Scheduled Auto-Approve*%0A%0A"
+                MESSAGE="${MESSAGE}🔹 *Device:* ${HOSTNAME:-Unknown}%0A"
+                MESSAGE="${MESSAGE}🔹 *MAC:* ${MAC}%0A"
+                MESSAGE="${MESSAGE}🔹 *IP:* ${IP}%0A"
+                MESSAGE="${MESSAGE}🔹 *Until:* ${EXPIRY_STR}"
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+                    -d "chat_id=${CHAT_ID}" \
+                    -d "text=${MESSAGE}" \
+                    -d "parse_mode=Markdown" > /dev/null
+            fi
+            exit 0
+        fi
+    fi
 fi
 
 # Step 4: For non-static devices with 'add' action, send notification
