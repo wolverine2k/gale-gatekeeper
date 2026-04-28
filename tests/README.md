@@ -3,6 +3,8 @@
 Dev-only POSIX-shell unit tests for the helpers used by `tg_bot.sh` and
 `gatekeeper.sh`. Run on a dev machine; not deployed to the router.
 
+Run from the repository root:
+
 ```sh
 sh tests/test_schedule_helpers.sh
 ```

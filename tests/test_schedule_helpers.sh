@@ -9,7 +9,7 @@ PASS=0
 FAIL=0
 
 assert_eq() {
-    label="$1"; got="$2"; want="$3"
+    local label="$1" got="$2" want="$3"
     if [ "$got" = "$want" ]; then
         PASS=$((PASS+1))
     else
