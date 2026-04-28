@@ -183,6 +183,7 @@ Send "**STATUS**" to your bot in Telegram. You should receive a status message w
 | `DISABLE` | Emergency disable (bypass all filtering) |
 | `LOG` | Display recent activity logs |
 | `CLEAR` | Clear logs and hostname cache |
+| `BACKUP` / `BACKUP NOSECRETS` | Send a config backup file (UCI text) to the chat. `NOSECRETS` blanks token/chat_id |
 
 ## 🎭 Blacklist Mode Explained
 

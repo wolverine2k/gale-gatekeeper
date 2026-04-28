@@ -24,6 +24,7 @@
 | `SCHEDREMOVE <name>` | Delete schedule |
 | `SCHEDOFF <name>` / `SCHEDON <name>` | Pause/resume schedule |
 | `SCHEDNOTIFY ON\|OFF\|STATUS` | Toggle schedule notifications |
+| `BACKUP [NOSECRETS]` | Send config backup as Telegram file |
 
 ## 🛠️ Common SSH Commands
 
