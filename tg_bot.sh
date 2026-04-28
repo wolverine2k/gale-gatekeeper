@@ -485,11 +485,20 @@ while true; do
                     # Store ID-to-MAC mapping for EXTEND/REVOKE commands
                     echo "$count=$M_ADDR" >> "$MAP_FILE"
 
-                    # Format guest entry: ID. Hostname, MAC address, remaining time, and absolute expiry
+                    # Tag entries that came from a scheduled push so the user can tell
+                    # the difference between manual approvals and schedule-driven ones.
+                    SCHED_TAG=""
+                    if [ -f "$SCHED_ACTIVE_FILE" ]; then
+                        SN=$(grep -i " ${M_ADDR} " "$SCHED_ACTIVE_FILE" | head -n 1 | awk '{print $1}')
+                        [ -n "$SN" ] && SCHED_TAG=" ⏰ _${SN}_"
+                    fi
+
+                    # Format guest entry: ID. Hostname, MAC address, remaining time,
+                    # absolute expiry, and (optional) schedule tag.
                     if [ -n "$EXPIRY_STR" ]; then
-                        MSG="${MSG}${count}. *${H_NAME}*\n   └ \`${M_ADDR}\` (${M_TIME}, expires ${EXPIRY_STR})\n"
+                        MSG="${MSG}${count}. *${H_NAME}*${SCHED_TAG}\n   └ \`${M_ADDR}\` (${M_TIME}, expires ${EXPIRY_STR})\n"
                     else
-                        MSG="${MSG}${count}. *${H_NAME}*\n   └ \`${M_ADDR}\` (${M_TIME})\n"
+                        MSG="${MSG}${count}. *${H_NAME}*${SCHED_TAG}\n   └ \`${M_ADDR}\` (${M_TIME})\n"
                     fi
                     count=$((count + 1))
                 done <<EOF
