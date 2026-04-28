@@ -1153,6 +1153,36 @@ EOF
             curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+        # === SCHEDOFF / SCHEDON COMMANDS ===
+        # Toggle a schedule's enabled flag. SCHEDOFF pauses (window pops on next tick);
+        # SCHEDON resumes (window pushes on next tick if currently in time-range).
+        elif { [ "$CMD" = "SCHEDOFF" ] || [ "$CMD" = "SCHEDON" ]; } && [ -n "$ARG" ]; then
+            SCHED_NAME=$(echo "$ARG" | tr '[:upper:]' '[:lower:]')
+            SECTION_TYPE=$(uci -q get "gatekeeper.${SCHED_NAME}")
+            if [ "$SECTION_TYPE" != "schedule" ]; then
+                MSG="❌ No schedule named '${SCHED_NAME}'"
+            else
+                if [ "$CMD" = "SCHEDOFF" ]; then
+                    uci set "gatekeeper.${SCHED_NAME}.enabled=0"
+                    NEW_STATE="paused"
+                    EMOJI="⏸️"
+                else
+                    uci set "gatekeeper.${SCHED_NAME}.enabled=1"
+                    NEW_STATE="enabled"
+                    EMOJI="▶️"
+                fi
+                if uci commit gatekeeper; then
+                    scheduler_tick
+                    MSG="${EMOJI} Schedule *${SCHED_NAME}* ${NEW_STATE}."
+                    echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - sched-${NEW_STATE}-${SCHED_NAME}" >> "$LOG_FILE"
+                else
+                    uci revert gatekeeper 2>/dev/null
+                    MSG="❌ Failed to toggle schedule (UCI commit error)"
+                fi
+            fi
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
         fi
     done
 done
