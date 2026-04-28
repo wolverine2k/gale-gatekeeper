@@ -9,6 +9,19 @@ Run from the repository root:
 sh tests/test_schedule_helpers.sh
 ```
 
+**macOS prerequisite:** the helpers use GNU-style `date -d "today HH:MM"` /
+`date -d "tomorrow HH:MM"`, which BSD `date` (default on macOS) does not
+support. Install GNU coreutils once with `brew install coreutils`, then run
+the suite with `gdate` shadowing `date`:
+
+```sh
+PATH="/opt/homebrew/opt/coreutils/libexec/gnubin:$PATH" sh tests/test_schedule_helpers.sh
+```
+
+(Adjust the prefix to `/usr/local/...` on Intel Homebrew.) BusyBox `date -d`
+on the router supports this syntax natively, so no workaround is needed in
+production.
+
 These tests cover the **pure-logic** helpers (`expand_days`,
 `window_active_now`). Integration with `nft` / `uci` / Telegram is verified
 manually on the router per the spec's testing plan

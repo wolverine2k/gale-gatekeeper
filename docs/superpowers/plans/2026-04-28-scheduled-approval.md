@@ -238,7 +238,13 @@ window_active_now() {
         date -d "today $stop" +%s
     else
         # Cross-midnight: today $start -> tomorrow $stop
-        yesterday_dow=$(date -d "yesterday" +%a | tr '[:upper:]' '[:lower:]')
+        # Derive yesterday from today_dow argument (no system clock dependency).
+        # Pure awk rotation makes the function deterministic given its inputs and
+        # therefore testable with synthetic today_dow values.
+        yesterday_dow=$(echo "$today_dow" | awk '
+            BEGIN { split("sun mon tue wed thu fri sat", d) }
+            { for (i=1;i<=7;i++) if (d[i]==$1) { print d[(i+5)%7+1]; exit } }
+        ')
         if echo "$expanded" | tr ' ' '\n' | grep -qx "$today_dow" \
            && [ "$now_m" -ge "$start_m" ]; then
             date -d "tomorrow $stop" +%s
@@ -343,7 +349,13 @@ window_active_now() {
         [ "$now_m" -lt "$stop_m" ] || return 0
         date -d "today $stop" +%s
     else
-        yesterday_dow=$(date -d "yesterday" +%a | tr '[:upper:]' '[:lower:]')
+        # Derive yesterday from today_dow argument (no system clock dependency).
+        # Pure awk rotation makes the function deterministic given its inputs and
+        # therefore testable with synthetic today_dow values.
+        yesterday_dow=$(echo "$today_dow" | awk '
+            BEGIN { split("sun mon tue wed thu fri sat", d) }
+            { for (i=1;i<=7;i++) if (d[i]==$1) { print d[(i+5)%7+1]; exit } }
+        ')
         if echo "$expanded" | tr ' ' '\n' | grep -qx "$today_dow" \
            && [ "$now_m" -ge "$start_m" ]; then
             date -d "tomorrow $stop" +%s
@@ -1078,7 +1090,13 @@ window_active_now() {
         [ "$now_m" -lt "$stop_m" ] || return 0
         date -d "today $stop" +%s
     else
-        yesterday_dow=$(date -d "yesterday" +%a | tr '[:upper:]' '[:lower:]')
+        # Derive yesterday from today_dow argument (no system clock dependency).
+        # Pure awk rotation makes the function deterministic given its inputs and
+        # therefore testable with synthetic today_dow values.
+        yesterday_dow=$(echo "$today_dow" | awk '
+            BEGIN { split("sun mon tue wed thu fri sat", d) }
+            { for (i=1;i<=7;i++) if (d[i]==$1) { print d[(i+5)%7+1]; exit } }
+        ')
         if echo "$expanded" | tr ' ' '\n' | grep -qx "$today_dow" \
            && [ "$now_m" -ge "$start_m" ]; then
             date -d "tomorrow $stop" +%s
