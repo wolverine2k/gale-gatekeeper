@@ -22,7 +22,8 @@ The system operates as a 5-stage event pipeline:
 3. MAC in `approved_macs` nftables set? → Silently exit
 4. `gatekeeper.main.disabled=1`? → Exit immediately (set by DISABLE command; checked first before input parsing)
 5. Blacklist mode ON + MAC not in `blacklist_macs`? → Auto-approve with 24h timeout, send info message
-6. Otherwise → Send approval request to Telegram with Approve/Deny buttons + start 5-minute auto-deny background timer
+6. Active schedule for MAC? → Auto-approve until window end, optionally notify (controlled by `gatekeeper.main.schedule_notify`)
+7. Otherwise → Send approval request to Telegram with Approve/Deny buttons + start 5-minute auto-deny background timer
 
 Note: Step 1 reads UCI directly (not the `static_macs` nftables set). The nftables set is a mirror populated by `gatekeeper_init` at boot **and** re-populated by `gatekeeper.nft` on every `fw4 reload` (including reloads triggered by WAN IP changes). The same is true for `blacklist_macs`. This dual-population is deliberate: automatic `fw4 reload` events would otherwise wipe the sets until a manual `SYNC`.
 
@@ -71,6 +72,8 @@ State: `uci get gatekeeper.main.blacklist_mode` (0 or 1). MACs: `gatekeeper.blac
 | `/tmp/denied_mac_map` | Session device ID→MAC mapping (DSTATUS/DEXTEND/DREVOKE) |
 | `/tmp/dns_locks/` | Rate-limit timestamps (one file per MAC, colons stripped). Stale files (>300s) GC'd on every event |
 | `/tmp/gatekeeper_timer_<MAC-no-colons>` | PID of the per-MAC 5-minute auto-deny timer; re-invocation of `gatekeeper.sh` for the same MAC `kill`s any prior timer before starting a new one (prevents orphaned `sleep 300` processes on rapid DHCP flaps) |
+| `/tmp/sched_active` | Schedule reconciliation snapshot (one line per active schedule: `name mac end-epoch`); rebuilt by `scheduler_tick` and read by `STATUS` for the ⏰ tag |
+| `/tmp/sched_lock` | flock guard preventing overlapping `scheduler_tick` invocations |
 
 ### Hostname Resolution Priority
 
@@ -172,6 +175,16 @@ opkg install gatekeeper_1.0.0-1_all.ipk
 
 **System:**
 - `HELP`, `LOG`, `SYNC`, `CLEAR`, `ENABLE`, `DISABLE`
+
+**Schedules (auto-approve windows):**
+- `SCHEDADD <mac> <days> <start>-<stop> [name]` — Register an auto-approval window. `name` auto-generated if omitted (`sched_<last3octets>_<n>`). `days` = `daily` | `weekdays` | `weekends` | comma-separated `mon,tue,...,sun`. Times in `HH:MM` 24h, router local TZ. `stop ≤ start` = crosses midnight, anchored to the start day.
+- `SCHEDLIST [mac]` — List all schedules; optional MAC filter. Active schedules tagged `⏰ active (until HH:MM)`.
+- `SCHEDSHOW <name>` — Single-schedule detail view.
+- `SCHEDREMOVE <name>` — Delete a schedule. If currently active, MAC is removed from `approved_macs` immediately.
+- `SCHEDOFF <name>` / `SCHEDON <name>` — Pause/resume a schedule without deleting it.
+- `SCHEDNOTIFY ON|OFF|STATUS` — Toggle the optional info message on schedule auto-approve (default OFF).
+
+Schedule definitions live in UCI (`/etc/config/gatekeeper`) as `config schedule '<name>'` sections; they survive reboots. The `scheduler_tick()` function in `tg_bot.sh` reconciles `approved_macs` once per polling-loop iteration. `gatekeeper.sh` step 3.6 reactively auto-approves mid-window DHCP events. A manual `REVOKE` during an active window adds the MAC to `denied_macs` for 30 min; the scheduler skips re-push while the deny entry exists, so REVOKE remains effective for at least 30 minutes during a window.
 
 **Inline button callbacks:** `approve_MAC` / `deny_MAC`
 

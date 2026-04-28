@@ -165,6 +165,16 @@ Send "**STATUS**" to your bot in Telegram. You should receive a status message w
 | `BLREMOVE [MAC]` | Remove MAC from blacklist |
 | `BLCLEAR` | Clear all MACs from blacklist |
 
+### Schedules (Auto-Approve Windows)
+| Command | Description |
+|---------|-------------|
+| `SCHEDADD <mac> <days> <start>-<stop> [name]` | Add a scheduled auto-approval window (`days`: `daily`, `weekdays`, `weekends`, or `mon,tue,...`) |
+| `SCHEDLIST [mac]` | List all schedules; filter by MAC. Active schedules tagged ⏰ |
+| `SCHEDSHOW <name>` | Show detail for a single schedule |
+| `SCHEDREMOVE <name>` | Delete a schedule (removes from `approved_macs` if currently active) |
+| `SCHEDOFF <name>` / `SCHEDON <name>` | Pause or resume a schedule without deleting it |
+| `SCHEDNOTIFY ON\|OFF\|STATUS` | Toggle info message on schedule auto-approve (default OFF) |
+
 ### System Control
 | Command | Description |
 |---------|-------------|

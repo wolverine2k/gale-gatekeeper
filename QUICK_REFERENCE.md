@@ -18,6 +18,12 @@
 | `EXTEND 1` | Give device #1 more time (+30 min default) |
 | `EXTEND 1 2` | Give device #1 more time (+2 hours) |
 | `REVOKE 1` | Kick device #1 off network |
+| `SCHEDADD <mac> <days> <start>-<stop> [name]` | Add scheduled auto-approve |
+| `SCHEDLIST [mac]` | List schedules |
+| `SCHEDSHOW <name>` | Show schedule detail |
+| `SCHEDREMOVE <name>` | Delete schedule |
+| `SCHEDOFF <name>` / `SCHEDON <name>` | Pause/resume schedule |
+| `SCHEDNOTIFY ON\|OFF\|STATUS` | Toggle schedule notifications |
 
 ## 🛠️ Common SSH Commands
 
