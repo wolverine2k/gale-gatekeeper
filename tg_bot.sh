@@ -155,6 +155,240 @@ parse_remaining_secs() {
     echo $((d * 86400 + h * 3600 + m * 60 + s))
 }
 
+# mac_hostname <mac> — emit best-known device name for a MAC, or empty.
+# Mirrors STATUS handler's resolution chain. Used by RESTORE preview.
+mac_hostname() {
+    m=$(echo "$1" | tr 'A-Z' 'a-z')
+    [ -z "$m" ] && return
+    h=$(grep -i "$m" "$NAME_MAP" 2>/dev/null | tail -n 1 | cut -d'=' -f2)
+    [ -z "$h" ] && h=$(grep -i "$m" /tmp/dhcp.leases 2>/dev/null | awk '{print $4}')
+    if [ -z "$h" ] || [ "$h" = "*" ]; then
+        h=$(uci show dhcp 2>/dev/null | grep -i "$m" | cut -d. -f2 \
+            | xargs -I {} uci -q get dhcp.{}.name 2>/dev/null | head -n 1)
+    fi
+    [ "$h" = "*" ] && h=""
+    echo "$h"
+}
+
+# is_valid_backup <path> — returns 0 if path is a Gatekeeper v1 backup,
+# 1 otherwise. Five-check validation gate.
+is_valid_backup() {
+    p="$1"
+    [ -f "$p" ] || return 1
+    sz=$(wc -c < "$p" 2>/dev/null)
+    [ -z "$sz" ] && return 1
+    [ "$sz" -gt 1048576 ] && return 1
+    head -n 1 "$p" | grep -q '^# Gatekeeper backup$' || return 1
+    grep -q '^# Schema:[[:space:]]*v1$' "$p" || return 1
+    grep -q '^# === /etc/config/gatekeeper ===$' "$p" || return 1
+    grep -q '^# === /etc/config/dhcp' "$p" || return 1
+    grep -q '^package gatekeeper$' "$p" || return 1
+    return 0
+}
+
+# restore_parse_to_records <input> <output-tsv>
+# Awk parser → tab-separated records:
+#   section <type> <name>
+#   option <type> <name> <key> <value>
+#   list <type> <name> <key> <value>
+restore_parse_to_records() {
+    awk '
+        BEGIN { in_section = 0; cur_type = ""; cur_name = ""; OFS = "\t" }
+        /^# === \/etc\/config\/gatekeeper ===/ { in_section = 1; next }
+        /^# === \/etc\/config\/dhcp/ { in_section = 0; next }
+        !in_section { next }
+        /^[[:space:]]*$/ { next }
+        /^#/ { next }
+        /^package / { next }
+        /^config / {
+            cur_type = $2
+            cur_name = ""
+            if (NF >= 3) {
+                n = $3
+                gsub(/^['\''"]/, "", n); gsub(/['\''"]$/, "", n)
+                cur_name = n
+            }
+            print "section", cur_type, cur_name
+            next
+        }
+        /^[[:space:]]+(option|list) / {
+            kind = $1
+            key  = $2
+            q1 = index($0, "'\''")
+            if (q1 == 0) next
+            q2 = length($0)
+            while (q2 > q1 && substr($0, q2, 1) != "'\''") q2--
+            if (q2 <= q1) next
+            val = substr($0, q1+1, q2-q1-1)
+            print kind, cur_type, cur_name, key, val
+        }
+    ' "$1" > "$2"
+}
+
+# restore_build_plan <records-tsv> <plan-out> <preview-out>
+# Reads records, computes the additive merge against current UCI, writes
+# the plan file (one uci command per line) and preview text. Returns 0
+# if the plan has at least one mutation, 1 if everything is a no-op.
+restore_build_plan() {
+    records="$1"
+    plan="$2"
+    preview="$3"
+
+    {
+        echo "# Restore plan generated at $(date -Iseconds 2>/dev/null || date)"
+    } > "$plan"
+    : > "$preview"
+
+    current_bl=$(uci show gatekeeper.blacklist 2>/dev/null \
+        | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}" \
+        | tr 'A-Z' 'a-z' | sort -u)
+
+    sec_type=""
+    sec_name=""
+    sec_skip=0
+    schedule_started=0
+    pending_sched_name=""
+    pending_sched_mac=""
+    pending_sched_days=""
+    pending_sched_start=""
+    pending_sched_stop=""
+
+    pv_main=""
+    pv_bl_added=""
+    pv_bl_present=""
+    pv_sched_added=""
+    pv_sched_present=""
+
+    plan_count=0
+    main_count=0
+    bl_added_count=0
+    bl_present_count=0
+    sched_added_count=0
+    sched_present_count=0
+
+    flush_pending_schedule() {
+        if [ -n "$pending_sched_name" ]; then
+            line="\n• \`${pending_sched_name}\` → \`${pending_sched_mac}\`"
+            host=$(mac_hostname "$pending_sched_mac")
+            [ -n "$host" ] && line="${line} (${host})"
+            line="${line}\n  ${pending_sched_days} ${pending_sched_start}–${pending_sched_stop}"
+            pv_sched_added="${pv_sched_added}${line}"
+            sched_added_count=$((sched_added_count+1))
+        fi
+        pending_sched_name=""
+        pending_sched_mac=""
+        pending_sched_days=""
+        pending_sched_start=""
+        pending_sched_stop=""
+    }
+
+    TAB=$(printf '\t')
+    while IFS="$TAB" read -r kind type name key val; do
+        if [ "$kind" = "section" ]; then
+            flush_pending_schedule
+            sec_type="$type"
+            sec_name="$name"
+            sec_skip=0
+            schedule_started=0
+            if [ "$type" = "schedule" ]; then
+                existing=$(uci -q get "gatekeeper.${name}")
+                if [ "$existing" = "schedule" ]; then
+                    sec_skip=1
+                    pv_sched_present="${pv_sched_present}\n• \`${name}\`"
+                    sched_present_count=$((sched_present_count+1))
+                fi
+            fi
+            continue
+        fi
+
+        [ "$sec_skip" = "1" ] && continue
+
+        case "$sec_type" in
+            gatekeeper)
+                if [ "$kind" = "option" ]; then
+                    case "$key" in
+                        token|chat_id) continue ;;
+                    esac
+                    [ -z "$val" ] && continue
+                    cur=$(uci -q get "gatekeeper.main.${key}")
+                    if [ "$cur" != "$val" ]; then
+                        echo "uci set gatekeeper.main.${key}='${val}'" >> "$plan"
+                        plan_count=$((plan_count+1))
+                        main_count=$((main_count+1))
+                        pv_main="${pv_main}\n• ${key}: \`${cur}\` → \`${val}\`"
+                    fi
+                fi
+                ;;
+            blacklist)
+                if [ "$kind" = "list" ] && [ "$key" = "mac" ]; then
+                    mac_lc=$(echo "$val" | tr 'A-Z' 'a-z')
+                    if echo "$current_bl" | grep -qx "$mac_lc"; then
+                        pv_bl_present="${pv_bl_present}\n• ${mac_lc}"
+                        bl_present_count=$((bl_present_count+1))
+                    else
+                        echo "uci add_list gatekeeper.blacklist.mac='${mac_lc}'" >> "$plan"
+                        plan_count=$((plan_count+1))
+                        bl_added_count=$((bl_added_count+1))
+                        host=$(mac_hostname "$mac_lc")
+                        if [ -n "$host" ]; then
+                            pv_bl_added="${pv_bl_added}\n• ${mac_lc} (${host})"
+                        else
+                            pv_bl_added="${pv_bl_added}\n• ${mac_lc}"
+                        fi
+                    fi
+                fi
+                ;;
+            schedule)
+                if [ "$schedule_started" = "0" ]; then
+                    echo "uci set gatekeeper.${sec_name}=schedule" >> "$plan"
+                    plan_count=$((plan_count+1))
+                    schedule_started=1
+                    pending_sched_name="$sec_name"
+                fi
+                if [ "$kind" = "option" ]; then
+                    echo "uci set gatekeeper.${sec_name}.${key}='${val}'" >> "$plan"
+                    plan_count=$((plan_count+1))
+                    case "$key" in
+                        mac)   pending_sched_mac="$val" ;;
+                        days)  pending_sched_days="$val" ;;
+                        start) pending_sched_start="$val" ;;
+                        stop)  pending_sched_stop="$val" ;;
+                    esac
+                fi
+                ;;
+        esac
+    done < "$records"
+
+    flush_pending_schedule
+
+    {
+        if [ "$main_count" -gt 0 ]; then
+            printf '*Main options:*%b\n_(token / chat_id never touched.)_\n\n' "$pv_main"
+        fi
+        if [ "$bl_added_count" -gt 0 ]; then
+            printf '*Blacklist additions* (%d new):%b\n\n' "$bl_added_count" "$pv_bl_added"
+        fi
+        if [ "$bl_present_count" -gt 0 ]; then
+            printf '*Blacklist already present* (%d):%b\n\n' "$bl_present_count" "$pv_bl_present"
+        fi
+        if [ "$sched_added_count" -gt 0 ]; then
+            printf '*Schedule additions* (%d new):%b\n\n' "$sched_added_count" "$pv_sched_added"
+        fi
+        if [ "$sched_present_count" -gt 0 ]; then
+            printf '*Schedule already present* (%d):%b\n\n' "$sched_present_count" "$pv_sched_present"
+        fi
+    } > "$preview"
+
+    [ "$plan_count" -gt 0 ]
+}
+
+# State files for the two-step restore flow
+RESTORE_FILE="/tmp/restore_file.txt"
+RESTORE_PLAN="/tmp/restore_plan.sh"
+RESTORE_RECORDS="/tmp/restore_records.tsv"
+RESTORE_PREVIEW="/tmp/restore_preview.txt"
+RESTORE_PENDING="/tmp/restore_pending"
+
 # Schedule helpers — kept identical to copies in gatekeeper.sh and the
 # unit-test file tests/test_schedule_helpers.sh. When you change one,
 # change all three.
@@ -396,6 +630,12 @@ while true; do
         ARG=$(echo "$TEXT" | awk '{print $2}')
         ARG2=$(echo "$TEXT" | awk '{print $3}')
 
+        # Reply-context fields used by RESTORE / YES handlers.
+        REPLY_DOC_ID=$(echo "$row" | jq -r '.message.reply_to_message.document.file_id // empty')
+        REPLY_DOC_NAME=$(echo "$row" | jq -r '.message.reply_to_message.document.file_name // empty')
+        REPLY_DOC_SIZE=$(echo "$row" | jq -r '.message.reply_to_message.document.file_size // 0')
+        REPLY_TO_MSGID=$(echo "$row" | jq -r '.message.reply_to_message.message_id // empty')
+
         # === HELP COMMAND ===
         # Display list of all available commands with descriptions
         # Provides user with comprehensive command reference
@@ -432,6 +672,7 @@ while true; do
             MSG="${MSG}\`LOG\` - View recent activity logs\n"
             MSG="${MSG}\`CLEAR\` - Clear logs and name cache\n"
             MSG="${MSG}\`BACKUP [NOSECRETS]\` - Send config backup as a Telegram file\n"
+            MSG="${MSG}\`RESTORE\` (reply to a backup file) - Restore config from a backup; \`YES\` to confirm\n"
             MSG="${MSG}\`HELP\` - Show this help message\n\n"
             MSG="${MSG}💡 _Use STATUS or DSTATUS first to get device IDs_"
 
@@ -1324,6 +1565,180 @@ EOF
             fi
 
             rm -f "$BACKUP_FILE"
+
+        # === RESTORE COMMAND ===
+        # Begin a restore from a backup file. Must be sent as a reply to the
+        # backup file message in the chat. Produces a preview; user confirms
+        # by replying YES to the preview within 10 minutes.
+        elif [ "$CMD" = "RESTORE" ]; then
+            if [ -z "$REPLY_DOC_ID" ]; then
+                MSG="❌ RESTORE must be sent as a reply to a backup file message."
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                continue
+            fi
+
+            if [ "$REPLY_DOC_SIZE" -gt 1048576 ] 2>/dev/null; then
+                MSG="❌ File too large (max 1 MB)."
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                continue
+            fi
+
+            # Fetch file_path via getFile.
+            GF_RESP=$(curl -s --connect-timeout 10 --max-time 30 \
+                "https://api.telegram.org/bot$TOKEN/getFile?file_id=$REPLY_DOC_ID")
+            FILE_PATH=$(echo "$GF_RESP" | jq -r '.result.file_path // empty')
+            if [ -z "$FILE_PATH" ]; then
+                MSG="❌ Couldn't fetch file from Telegram."
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                logger -t tg_bot "Restore getFile failed: $GF_RESP"
+                continue
+            fi
+
+            # Download to /tmp.
+            rm -f "$RESTORE_FILE" "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW"
+            curl -s --connect-timeout 10 --max-time 30 \
+                -o "$RESTORE_FILE" \
+                "https://api.telegram.org/file/bot$TOKEN/$FILE_PATH"
+
+            # Validate.
+            if ! is_valid_backup "$RESTORE_FILE"; then
+                MSG="❌ Backup file invalid (failed validation gate)."
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                rm -f "$RESTORE_FILE"
+                continue
+            fi
+
+            # Parse + diff. restore_build_plan returns 0 if there's at least
+            # one mutation, 1 if everything is already present.
+            restore_parse_to_records "$RESTORE_FILE" "$RESTORE_RECORDS"
+            if ! restore_build_plan "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW"; then
+                MSG="🔄 Restore preview — nothing to do.\nAll entries from this backup are already present."
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                rm -f "$RESTORE_FILE" "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW"
+                continue
+            fi
+
+            # Send preview, capture the new message_id, persist pending state.
+            PREVIEW_BODY=$(printf '🔄 Restore preview from \`%s\`\n\n' "${REPLY_DOC_NAME:-unknown}")
+            PREVIEW_BODY="${PREVIEW_BODY}$(cat "$RESTORE_PREVIEW")"
+            PREVIEW_BODY="${PREVIEW_BODY}\nReply YES (within 10 minutes) to apply."
+            PREVIEW_PAYLOAD=$(jq -n --arg c "$CHAT_ID" --arg t "$PREVIEW_BODY" \
+                '{chat_id: $c, text: $t, parse_mode: "Markdown"}')
+            PREVIEW_RESP=$(curl -s $CURL_OPTS -X POST \
+                "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                -H "Content-Type: application/json" -d "$PREVIEW_PAYLOAD")
+            PREVIEW_MSGID=$(echo "$PREVIEW_RESP" | jq -r '.result.message_id // empty')
+            if [ -z "$PREVIEW_MSGID" ]; then
+                logger -t tg_bot "Restore preview send failed: $PREVIEW_RESP"
+                rm -f "$RESTORE_FILE" "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW"
+                continue
+            fi
+
+            echo "$PREVIEW_MSGID $(date +%s)" > "$RESTORE_PENDING"
+            logger -t tg_bot "Restore preview sent: msg_id=$PREVIEW_MSGID file=$REPLY_DOC_NAME"
+
+        # === YES COMMAND ===
+        # Confirm a pending restore. Must be sent as a reply to the preview
+        # message and within 10 minutes.
+        elif [ "$CMD" = "YES" ]; then
+            # Strict gating: silently ignore unless this YES matches the pending preview.
+            [ -z "$REPLY_TO_MSGID" ] && continue
+            [ -f "$RESTORE_PENDING" ] || continue
+            STORED_MSGID=$(awk '{print $1}' "$RESTORE_PENDING")
+            STORED_EPOCH=$(awk '{print $2}' "$RESTORE_PENDING")
+            [ "$REPLY_TO_MSGID" = "$STORED_MSGID" ] || continue
+
+            NOW_EPOCH=$(date +%s)
+            if [ $((NOW_EPOCH - STORED_EPOCH)) -gt 600 ]; then
+                MSG="⌛ Pending restore expired (>10 min). Reply RESTORE to a backup file again."
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                rm -f "$RESTORE_FILE" "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW" "$RESTORE_PENDING"
+                continue
+            fi
+
+            if [ ! -s "$RESTORE_PLAN" ]; then
+                MSG="❌ Plan file missing — restart restore by replying RESTORE to a backup file."
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                rm -f "$RESTORE_PENDING"
+                continue
+            fi
+
+            # Two-phase apply.
+            FAILED_LINE=""
+            while IFS= read -r line; do
+                case "$line" in
+                    ''|\#*) continue ;;
+                esac
+                if ! eval "$line"; then
+                    FAILED_LINE="$line"
+                    break
+                fi
+            done < "$RESTORE_PLAN"
+
+            if [ -n "$FAILED_LINE" ]; then
+                uci revert gatekeeper 2>/dev/null
+                MSG="❌ Restore failed at: \`${FAILED_LINE}\`"
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                rm -f "$RESTORE_FILE" "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW" "$RESTORE_PENDING"
+                continue
+            fi
+
+            if ! uci commit gatekeeper; then
+                uci revert gatekeeper 2>/dev/null
+                MSG="❌ Restore commit failed (UCI error)."
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                rm -f "$RESTORE_FILE" "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW" "$RESTORE_PENDING"
+                continue
+            fi
+
+            # Post-apply hooks.
+            # Re-sync blacklist_macs nftables set from new UCI state.
+            nft flush set inet fw4 blacklist_macs 2>/dev/null
+            BLACKLIST_MACS=$(uci show gatekeeper.blacklist 2>/dev/null \
+                | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
+            for mac in $BLACKLIST_MACS; do
+                [ -z "$mac" ] && continue
+                nft "add element inet fw4 blacklist_macs { $mac }" 2>/dev/null
+            done
+            # Push any newly-restored active schedules.
+            scheduler_tick
+
+            # Compose summary from the plan file.
+            N_MAIN=$(grep -c '^uci set gatekeeper\.main\.' "$RESTORE_PLAN")
+            N_BL=$(grep -c '^uci add_list gatekeeper\.blacklist\.mac=' "$RESTORE_PLAN")
+            N_SCHED=$(grep -cE '^uci set gatekeeper\.[^.]+=schedule$' "$RESTORE_PLAN")
+            N_TOTAL=$((N_MAIN + N_BL + N_SCHED))
+
+            MSG="✅ Restore complete: ${N_TOTAL} change(s) applied.\n"
+            [ "$N_MAIN"  -gt 0 ] && MSG="${MSG}• ${N_MAIN} main option(s) updated\n"
+            [ "$N_BL"    -gt 0 ] && MSG="${MSG}• ${N_BL} blacklist MAC(s) added\n"
+            [ "$N_SCHED" -gt 0 ] && MSG="${MSG}• ${N_SCHED} schedule(s) added\n"
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - restore-applied-${N_TOTAL}" >> "$LOG_FILE"
+            logger -t tg_bot "Restore applied: $N_TOTAL changes (main=$N_MAIN bl=$N_BL sched=$N_SCHED)"
+
+            rm -f "$RESTORE_FILE" "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW" "$RESTORE_PENDING"
         fi
     done
 done
