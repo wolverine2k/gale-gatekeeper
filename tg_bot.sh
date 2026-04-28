@@ -1117,6 +1117,42 @@ EOF
             curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+        # === SCHEDSHOW COMMAND ===
+        # Show full details of one schedule.
+        # Usage: SCHEDSHOW <name>
+        elif [ "$CMD" = "SCHEDSHOW" ] && [ -n "$ARG" ]; then
+            SCHED_NAME=$(echo "$ARG" | tr '[:upper:]' '[:lower:]')
+            SECTION_TYPE=$(uci -q get "gatekeeper.${SCHED_NAME}")
+            if [ "$SECTION_TYPE" != "schedule" ]; then
+                MSG="❌ No schedule named '${SCHED_NAME}'"
+            else
+                mac=$(uci -q get "gatekeeper.${SCHED_NAME}.mac")
+                days=$(uci -q get "gatekeeper.${SCHED_NAME}.days")
+                start=$(uci -q get "gatekeeper.${SCHED_NAME}.start")
+                stop=$(uci -q get "gatekeeper.${SCHED_NAME}.stop")
+                label=$(uci -q get "gatekeeper.${SCHED_NAME}.label")
+                enabled=$(uci -q get "gatekeeper.${SCHED_NAME}.enabled" || echo 1)
+
+                STATE="paused"
+                if [ "$enabled" = "1" ]; then
+                    STATE="enabled"
+                    if [ -f "$SCHED_ACTIVE_FILE" ] && grep -q "^${SCHED_NAME} " "$SCHED_ACTIVE_FILE"; then
+                        end_epoch=$(grep "^${SCHED_NAME} " "$SCHED_ACTIVE_FILE" | awk '{print $3}')
+                        end_str=$(date -d "@${end_epoch}" '+%Y-%m-%d %H:%M' 2>/dev/null)
+                        STATE="enabled, ⏰ active until ${end_str}"
+                    fi
+                fi
+
+                MSG="📅 *Schedule:* ${SCHED_NAME}\n"
+                MSG="${MSG}🔹 *MAC:* \`${mac}\`\n"
+                MSG="${MSG}🔹 *Days:* ${days}\n"
+                MSG="${MSG}🔹 *Window:* ${start}–${stop}\n"
+                MSG="${MSG}🔹 *State:* ${STATE}\n"
+                [ -n "$label" ] && MSG="${MSG}🔹 *Label:* ${label}\n"
+            fi
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
         fi
     done
 done
