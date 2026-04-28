@@ -155,6 +155,121 @@ parse_remaining_secs() {
     echo $((d * 86400 + h * 3600 + m * 60 + s))
 }
 
+# Schedule helpers — kept identical to copies in gatekeeper.sh and the
+# unit-test file tests/test_schedule_helpers.sh. When you change one,
+# change all three.
+expand_days() {
+    case "$1" in
+        daily)    echo "mon tue wed thu fri sat sun" ;;
+        weekdays) echo "mon tue wed thu fri" ;;
+        weekends) echo "sat sun" ;;
+        *)        echo "$1" | tr ',' ' ' ;;
+    esac
+}
+
+hm_to_min() {
+    echo "$1" | awk -F: '{print $1 * 60 + $2}'
+}
+
+window_active_now() {
+    days="$1"; start="$2"; stop="$3"; today_dow="$4"; now_hm="$5"
+    expanded=$(expand_days "$days")
+    start_m=$(hm_to_min "$start")
+    stop_m=$(hm_to_min "$stop")
+    now_m=$(hm_to_min "$now_hm")
+
+    if [ "$start_m" -lt "$stop_m" ]; then
+        echo "$expanded" | tr ' ' '\n' | grep -qx "$today_dow" || return 0
+        [ "$now_m" -ge "$start_m" ] || return 0
+        [ "$now_m" -lt "$stop_m" ] || return 0
+        date -d "today $stop" +%s
+    else
+        # Derive yesterday from today_dow argument (no system clock dependency).
+        yesterday_dow=$(echo "$today_dow" | awk '
+            BEGIN { split("sun mon tue wed thu fri sat", d) }
+            { for (i=1;i<=7;i++) if (d[i]==$1) { print d[(i+5)%7+1]; exit } }
+        ')
+        if echo "$expanded" | tr ' ' '\n' | grep -qx "$today_dow" \
+           && [ "$now_m" -ge "$start_m" ]; then
+            date -d "tomorrow $stop" +%s
+        elif echo "$expanded" | tr ' ' '\n' | grep -qx "$yesterday_dow" \
+             && [ "$now_m" -lt "$stop_m" ]; then
+            date -d "today $stop" +%s
+        fi
+    fi
+}
+
+# scheduler_tick — converge approved_macs toward the union of currently-active
+# schedules. Called once per main-loop iteration. Idempotent and crash-safe:
+# missed ticks are recovered by the next one.
+SCHED_ACTIVE_FILE="/tmp/sched_active"
+SCHED_LOCK_FILE="/tmp/sched_lock"
+
+scheduler_tick() {
+    # Skip while gatekeeper is in emergency-disabled state.
+    [ "$(uci -q get gatekeeper.main.disabled)" = "1" ] && return 0
+
+    # Skip until NTP has set a sane date (first ~60 s after boot).
+    [ "$(date +%Y)" -ge 2024 ] || return 0
+
+    # Single-flight: skip if another tick is already running.
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$SCHED_LOCK_FILE"
+        flock -n 9 || return 0
+    fi
+
+    NOW_EPOCH=$(date +%s)
+    DOW=$(date +%a | tr '[:upper:]' '[:lower:]')
+    HM=$(date +%H:%M)
+
+    : > "${SCHED_ACTIVE_FILE}.tmp"
+
+    # Iterate UCI schedule sections.
+    for sec in $(uci show gatekeeper 2>/dev/null \
+                 | sed -n 's/^gatekeeper\.\([^.=]*\)=schedule$/\1/p'); do
+        enabled=$(uci -q get "gatekeeper.${sec}.enabled" || echo 1)
+        [ "$enabled" = "1" ] || continue
+
+        mac=$(uci -q get "gatekeeper.${sec}.mac" | tr '[:upper:]' '[:lower:]')
+        days=$(uci -q get "gatekeeper.${sec}.days")
+        start=$(uci -q get "gatekeeper.${sec}.start")
+        stop=$(uci -q get "gatekeeper.${sec}.stop")
+
+        [ -n "$mac" ] && [ -n "$days" ] && [ -n "$start" ] && [ -n "$stop" ] || continue
+
+        end_epoch=$(window_active_now "$days" "$start" "$stop" "$DOW" "$HM")
+        [ -n "$end_epoch" ] || continue
+
+        # 4b: denied_macs wins.
+        if nft list set inet fw4 denied_macs 2>/dev/null | grep -qi "$mac"; then
+            continue
+        fi
+
+        remaining=$(( end_epoch - NOW_EPOCH ))
+        [ "$remaining" -ge 60 ] || continue
+
+        # Idempotent push (delete-then-add is required to update timeout).
+        nft "delete element inet fw4 approved_macs { $mac }" 2>/dev/null
+        nft "add element inet fw4 approved_macs { $mac timeout ${remaining}s }" 2>/dev/null
+
+        echo "$sec $mac $end_epoch" >> "${SCHED_ACTIVE_FILE}.tmp"
+    done
+
+    # Window-end pop: any MAC active last tick but not now -> remove.
+    if [ -f "$SCHED_ACTIVE_FILE" ]; then
+        old_macs=$(awk '{print $2}' "$SCHED_ACTIVE_FILE" | sort -u)
+        new_macs=$(awk '{print $2}' "${SCHED_ACTIVE_FILE}.tmp" | sort -u)
+        for mac in $old_macs; do
+            if ! echo "$new_macs" | grep -qx "$mac"; then
+                nft "delete element inet fw4 approved_macs { $mac }" 2>/dev/null
+                echo "$(date '+%Y-%m-%dT%H:%M:%S') $mac - - schedule-window-ended" >> "$LOG_FILE"
+            fi
+        done
+    fi
+
+    mv "${SCHED_ACTIVE_FILE}.tmp" "$SCHED_ACTIVE_FILE"
+}
+
 # Main event loop: Continuously poll Telegram API for updates
 # Uses long polling with 30-second timeout for efficient real-time updates
 while true; do
@@ -181,6 +296,10 @@ while true; do
     if [ -f "$LOG_FILE" ] && [ "$(wc -l < "$LOG_FILE" 2>/dev/null)" -gt 1000 ]; then
         tail -n 500 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
     fi
+
+    # Reconcile schedule-driven approvals before processing Telegram updates.
+    # Tick is cheap (~tens of ms) and idempotent.
+    scheduler_tick
 
     # Process each update in the response array
     # jq extracts individual update objects as separate lines for sequential processing
