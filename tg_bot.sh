@@ -179,12 +179,14 @@ window_active_now() {
     now_m=$(hm_to_min "$now_hm")
 
     if [ "$start_m" -lt "$stop_m" ]; then
+        # Same-day window
         echo "$expanded" | tr ' ' '\n' | grep -qx "$today_dow" || return 0
         [ "$now_m" -ge "$start_m" ] || return 0
         [ "$now_m" -lt "$stop_m" ] || return 0
         date -d "today $stop" +%s
     else
-        # Derive yesterday from today_dow argument (no system clock dependency).
+        # Cross-midnight: today $start -> tomorrow $stop
+        # Derive yesterday from today_dow (no system clock dependency)
         yesterday_dow=$(echo "$today_dow" | awk '
             BEGIN { split("sun mon tue wed thu fri sat", d) }
             { for (i=1;i<=7;i++) if (d[i]==$1) { print d[(i+5)%7+1]; exit } }
@@ -206,6 +208,12 @@ SCHED_ACTIVE_FILE="/tmp/sched_active"
 SCHED_LOCK_FILE="/tmp/sched_lock"
 
 scheduler_tick() {
+    # Function-local variables — stop pollution of the surrounding loop scope
+    # (BusyBox ash supports `local`; helpers below stay sans-`local` because
+    # they're always invoked via $(...) and run in their own subshell).
+    local NOW_EPOCH DOW HM sec enabled mac days start stop
+    local end_epoch remaining old_macs new_macs locked
+
     # Skip while gatekeeper is in emergency-disabled state.
     [ "$(uci -q get gatekeeper.main.disabled)" = "1" ] && return 0
 
@@ -213,9 +221,11 @@ scheduler_tick() {
     [ "$(date +%Y)" -ge 2024 ] || return 0
 
     # Single-flight: skip if another tick is already running.
+    locked=0
     if command -v flock >/dev/null 2>&1; then
         exec 9>"$SCHED_LOCK_FILE"
         flock -n 9 || return 0
+        locked=1
     fi
 
     NOW_EPOCH=$(date +%s)
@@ -268,6 +278,10 @@ scheduler_tick() {
     fi
 
     mv "${SCHED_ACTIVE_FILE}.tmp" "$SCHED_ACTIVE_FILE"
+
+    # Release the lock fd so it isn't inherited by every child the main loop
+    # spawns afterwards (curl, jq, nft, awk, etc.). Re-opened on the next tick.
+    [ "$locked" = "1" ] && exec 9<&-
 }
 
 # Main event loop: Continuously poll Telegram API for updates
