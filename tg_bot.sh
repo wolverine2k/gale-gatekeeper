@@ -950,6 +950,84 @@ EOF
             MSG="✅ Blacklist cleared - all MACs removed"
             logger -t tg_bot "Blacklist cleared"
             curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
+
+        # === SCHEDADD COMMAND ===
+        # Add a scheduled auto-approval window.
+        # Usage: SCHEDADD <mac> <days> <start>-<stop> [name]
+        elif [ "$CMD" = "SCHEDADD" ]; then
+            SCHED_MAC=$(echo "$TEXT" | awk '{print $2}' | tr '[:upper:]' '[:lower:]')
+            SCHED_DAYS=$(echo "$TEXT" | awk '{print $3}' | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+            SCHED_WIN=$(echo "$TEXT" | awk '{print $4}')
+            SCHED_NAME=$(echo "$TEXT" | awk '{print $5}' | tr '[:upper:]' '[:lower:]')
+
+            # Validate MAC
+            if ! echo "$SCHED_MAC" | grep -qE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'; then
+                MSG="❌ Invalid MAC. Usage: SCHEDADD <mac> <days> <start>-<stop> [name]"
+            # Validate days
+            elif ! { [ "$SCHED_DAYS" = "daily" ] || [ "$SCHED_DAYS" = "weekdays" ] || [ "$SCHED_DAYS" = "weekends" ] \
+                   || echo "$SCHED_DAYS" | grep -qE '^(mon|tue|wed|thu|fri|sat|sun)(,(mon|tue|wed|thu|fri|sat|sun))*$'; }; then
+                MSG="❌ Invalid days. Use: daily | weekdays | weekends | mon,tue,wed,thu,fri,sat,sun"
+            # Validate window
+            elif ! echo "$SCHED_WIN" | grep -qE '^[0-2][0-9]:[0-5][0-9]-[0-2][0-9]:[0-5][0-9]$'; then
+                MSG="❌ Invalid window. Use: HH:MM-HH:MM (24h, e.g. 16:00-20:00)"
+            else
+                SCHED_START=${SCHED_WIN%-*}
+                SCHED_STOP=${SCHED_WIN#*-}
+                if [ "$SCHED_START" = "$SCHED_STOP" ]; then
+                    MSG="❌ start and stop must differ"
+                else
+                    # Resolve name (auto-generate or validate)
+                    if [ -z "$SCHED_NAME" ]; then
+                        SUFFIX=$(echo "$SCHED_MAC" | tr -d ':' | cut -c7-12)
+                        n=1
+                        while uci -q get "gatekeeper.sched_${SUFFIX}_${n}" >/dev/null 2>&1; do
+                            n=$((n+1))
+                        done
+                        SCHED_NAME="sched_${SUFFIX}_${n}"
+                        NAME_VALID=1
+                    elif ! echo "$SCHED_NAME" | grep -qE '^[a-z0-9_]{1,32}$'; then
+                        MSG="❌ Invalid name. Use 1-32 chars of [a-z0-9_]"
+                        NAME_VALID=0
+                    elif uci -q get "gatekeeper.${SCHED_NAME}" >/dev/null 2>&1; then
+                        MSG="❌ Schedule '${SCHED_NAME}' already exists. Use SCHEDREMOVE first."
+                        NAME_VALID=0
+                    else
+                        NAME_VALID=1
+                    fi
+
+                    if [ "$NAME_VALID" = "1" ]; then
+                        # Static-lease check (warn-but-allow per decision 4d)
+                        STATIC_LEASES=$(uci show dhcp 2>/dev/null | grep "\.mac=" | awk -F"='" '{print $2}' | tr -d "'" | tr '[:upper:]' '[:lower:]')
+                        WARN=""
+                        for sm in $STATIC_LEASES; do
+                            if [ "$sm" = "$SCHED_MAC" ]; then
+                                WARN="⚠️ MAC has a static DHCP lease; this schedule will have no effect until the static lease is removed.\n\n"
+                                break
+                            fi
+                        done
+
+                        # Persist
+                        uci set "gatekeeper.${SCHED_NAME}=schedule"
+                        uci set "gatekeeper.${SCHED_NAME}.mac=${SCHED_MAC}"
+                        uci set "gatekeeper.${SCHED_NAME}.days=${SCHED_DAYS}"
+                        uci set "gatekeeper.${SCHED_NAME}.start=${SCHED_START}"
+                        uci set "gatekeeper.${SCHED_NAME}.stop=${SCHED_STOP}"
+                        uci set "gatekeeper.${SCHED_NAME}.enabled=1"
+                        if uci commit gatekeeper; then
+                            scheduler_tick
+                            MSG="${WARN}✅ Schedule *${SCHED_NAME}* added: \`${SCHED_MAC}\` ${SCHED_DAYS} ${SCHED_START}–${SCHED_STOP}"
+                            echo "$(date '+%Y-%m-%dT%H:%M:%S') ${SCHED_MAC} - - sched-added-${SCHED_NAME}" >> "$LOG_FILE"
+                            logger -t tg_bot "Schedule added: ${SCHED_NAME} (${SCHED_MAC} ${SCHED_DAYS} ${SCHED_START}-${SCHED_STOP})"
+                        else
+                            uci revert gatekeeper 2>/dev/null
+                            MSG="❌ Failed to save schedule (UCI commit error)"
+                        fi
+                    fi
+                fi
+            fi
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
         fi
     done
 done
