@@ -1183,6 +1183,45 @@ EOF
             curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
                  -H "Content-Type: application/json" \
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+        # === SCHEDNOTIFY COMMAND ===
+        # Toggle the optional info-message on schedule auto-approve.
+        # Usage: SCHEDNOTIFY ON | OFF | STATUS
+        elif [ "$CMD" = "SCHEDNOTIFY" ] && [ -n "$ARG" ]; then
+            SUB=$(echo "$ARG" | tr '[:lower:]' '[:upper:]')
+            case "$SUB" in
+                ON)
+                    uci set gatekeeper.main.schedule_notify=1
+                    if uci commit gatekeeper; then
+                        MSG="🔔 Schedule notifications: *ENABLED*"
+                    else
+                        uci revert gatekeeper 2>/dev/null
+                        MSG="❌ Failed to update setting (UCI commit error)"
+                    fi
+                    ;;
+                OFF)
+                    uci set gatekeeper.main.schedule_notify=0
+                    if uci commit gatekeeper; then
+                        MSG="🔕 Schedule notifications: *DISABLED*"
+                    else
+                        uci revert gatekeeper 2>/dev/null
+                        MSG="❌ Failed to update setting (UCI commit error)"
+                    fi
+                    ;;
+                STATUS)
+                    SN=$(uci -q get gatekeeper.main.schedule_notify || echo 0)
+                    if [ "$SN" = "1" ]; then
+                        MSG="🔔 Schedule notifications: *ENABLED*"
+                    else
+                        MSG="🔕 Schedule notifications: *DISABLED*"
+                    fi
+                    ;;
+                *)
+                    MSG="❌ Usage: SCHEDNOTIFY ON | OFF | STATUS"
+                    ;;
+            esac
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
         fi
     done
 done
