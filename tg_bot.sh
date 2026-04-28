@@ -158,6 +158,7 @@ parse_remaining_secs() {
 # mac_hostname <mac> — emit best-known device name for a MAC, or empty.
 # Mirrors STATUS handler's resolution chain. Used by RESTORE preview.
 mac_hostname() {
+    local m h
     m=$(echo "$1" | tr 'A-Z' 'a-z')
     [ -z "$m" ] && return
     h=$(grep -i "$m" "$NAME_MAP" 2>/dev/null | tail -n 1 | cut -d'=' -f2)
@@ -173,6 +174,7 @@ mac_hostname() {
 # is_valid_backup <path> — returns 0 if path is a Gatekeeper v1 backup,
 # 1 otherwise. Five-check validation gate.
 is_valid_backup() {
+    local p sz
     p="$1"
     [ -f "$p" ] || return 1
     sz=$(wc -c < "$p" 2>/dev/null)
