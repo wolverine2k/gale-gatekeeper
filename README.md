@@ -16,7 +16,10 @@ A Telegram-based network access control system for OpenWrt routers. Get instant 
 - **Emergency Bypass** - Global off-switch for emergencies
 
 ### Advanced Features
-- **Blacklist Mode** ⭐ NEW - Invert approval logic: only blacklisted MACs require approval, all others are auto-approved for 24 hours
+- **Scheduled Auto-Approval** ⭐ NEW - Time-window-based MAC auto-approval. Multiple schedules per MAC; per-day or daily/weekdays/weekends; cross-midnight windows supported. Hybrid push/pop (proactive at window start, reactive on mid-window DHCP events).
+- **Configuration Backup** ⭐ NEW - One-command Telegram-driven UCI snapshot (`BACKUP`); optional `NOSECRETS` variant blanks token/chat_id; uploaded as a Telegram document.
+- **Configuration Restore** ⭐ NEW - Reply `RESTORE` to a backup file, then `YES` to confirm. Additive merge (skip duplicates), two-phase apply with revert-on-failure, never overwrites token/chat_id.
+- **Blacklist Mode** - Invert approval logic: only blacklisted MACs require approval, all others are auto-approved for 24 hours
 - **Device Management** - Extend, revoke, and track active guests via Telegram commands
 - **Denied Device Tracking** - Manage denied devices with timeout extension and removal
 - **Custom Device Names** - Cache device hostnames for easier identification
@@ -231,14 +234,27 @@ dnsmasq_trigger.sh (DHCP event → ubus)
         ↓
 gatekeeper_trigger.sh (ubus listener + rate limiting)
         ↓
-gatekeeper.sh (approval logic + blacklist mode)
+gatekeeper.sh — validation order:
+  1. static lease?       → silent allow (static_macs)
+  2. denied_macs?        → silent exit
+  3. approved_macs?      → silent exit
+  4. disabled flag?      → exit
+  5. blacklist mode ON,
+     MAC not blacklisted? → auto-approve 24h, info message
+  6. active schedule?    → auto-approve until window end (silent
+                            unless SCHEDNOTIFY ON)
+  7. otherwise           → Telegram notification with Approve/Deny
         ↓
-Telegram Notification (Approve/Deny buttons)
+Telegram Notification (Approve/Deny buttons)   ← only if step 7
         ↓
-tg_bot.sh (handles user response)
+tg_bot.sh (handles user response, callbacks, all bot commands)
         ↓
 nftables (approved_macs or denied_macs)
 ```
+
+In parallel, `tg_bot.sh`'s polling loop runs `scheduler_tick` every iteration (~30 s)
+to push/pop `approved_macs` at schedule window boundaries — independent of any
+DHCP event.
 
 ### Firewall Sets (nftables)
 
@@ -276,9 +292,12 @@ The system uses 4 nftables sets for access control:
 ├── tg_offset                  # Telegram update tracking
 ├── gatekeeper.log             # Activity logs
 ├── mac_names                  # Device hostname cache
-├── mac_map                    # Device ID mapping
-├── denied_mac_map             # Denied device ID mapping
-└── dns_locks/                 # Rate limiting timestamps
+├── mac_map                    # Device ID mapping (STATUS/EXTEND/REVOKE)
+├── denied_mac_map             # Denied device ID mapping (DSTATUS/DEXTEND/DREVOKE)
+├── dns_locks/                 # Rate limiting timestamps (one file per MAC)
+├── gatekeeper_timer_<MAC>     # Per-MAC 5-min auto-deny timer PID
+├── sched_active               # Currently-active schedules (rebuilt every scheduler_tick)
+└── sched_lock                 # flock guard for scheduler_tick single-flight
 ```
 
 ## 🔧 Configuration
@@ -289,11 +308,24 @@ The system uses 4 nftables sets for access control:
 config gatekeeper 'main'
     option token 'YOUR_TELEGRAM_BOT_TOKEN'
     option chat_id 'YOUR_TELEGRAM_CHAT_ID'
-    option blacklist_mode '0'  # 0=OFF, 1=ON
+    option blacklist_mode '0'      # 0=OFF, 1=ON
+    option disabled '0'            # 0=active, 1=emergency-disabled (set by DISABLE)
+    option schedule_notify '0'     # 0=silent, 1=info message on schedule auto-approve
 
 config blacklist 'blacklist'
-    list mac 'aa:bb:cc:dd:ee:ff'  # Optional blacklist entries
+    list mac 'aa:bb:cc:dd:ee:ff'   # Optional blacklist entries
     list mac '11:22:33:44:55:66'
+
+# One section per scheduled auto-approval window. Multiple sections per MAC
+# are allowed (e.g. weekday vs. weekend). Manage via SCHEDADD / SCHEDLIST /
+# SCHEDREMOVE / SCHEDOFF / SCHEDON Telegram commands.
+config schedule 'sched_kids_eve'
+    option mac 'aa:bb:cc:dd:ee:ff'
+    option days 'weekdays'         # daily | weekdays | weekends | mon,tue,...
+    option start '16:00'            # HH:MM, router local TZ
+    option stop '20:00'             # stop ≤ start ⇒ crosses midnight
+    option label 'Kids tablet evening'  # optional, display-only
+    option enabled '1'              # 0 ⇒ paused (toggled by SCHEDOFF/SCHEDON)
 ```
 
 ### View Current Configuration

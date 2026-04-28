@@ -255,7 +255,6 @@ logread -f | grep -E "gatekeeper|tg_bot"
    nft list set inet fw4 approved_macs
    nft list set inet fw4 denied_macs
    nft list set inet fw4 static_macs
-   nft list set inet fw4 bypass_switch
    ```
 
 ---

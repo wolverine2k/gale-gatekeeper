@@ -95,6 +95,54 @@ BLSTATUS                       # Check status
 # All other devices automatically approved for 24 hours
 ```
 
+## ⏰ Scheduled Auto-Approval Quick Guide
+
+### When to use scheduled approval
+- Devices you want online only at specific times (kid's tablet, work laptop, IoT) ✅
+- You're tired of tapping Approve every day at the same hour ✅
+- You want a recurring window without managing it manually ✅
+
+### How it works
+- A `scheduler_tick` runs every ~30s in `tg_bot.sh`'s polling loop
+- Inside an active window: MAC is auto-approved silently (and `STATUS` tags it `⏰ <name>`)
+- At window end: MAC is removed from `approved_macs`; reconnect goes through normal approval
+- Cross-midnight (`stop ≤ start`) is supported and anchored to the start day
+- Multiple schedules per MAC are allowed
+
+### Quick setup
+```bash
+# In Telegram (note: UCI section names use underscores, not hyphens)
+SCHEDADD aa:bb:cc:dd:ee:ff weekdays 16:00-20:00 kids_eve
+SCHEDADD aa:bb:cc:dd:ee:ff weekends 09:00-21:00            # name auto-generated
+SCHEDLIST                                                    # see active windows tagged ⏰
+SCHEDSHOW kids_eve                                           # full details
+SCHEDOFF kids_eve                                            # pause without deleting
+SCHEDON  kids_eve                                            # resume
+SCHEDREMOVE kids_eve                                         # delete
+SCHEDNOTIFY ON                                               # info message on each schedule auto-approve
+```
+
+## 💾 Backup & Restore Quick Guide
+
+### Backup
+```bash
+# In Telegram
+BACKUP                         # full snapshot, includes token + chat_id
+BACKUP NOSECRETS               # token / chat_id blanked before upload
+```
+The bot replies with a `.txt` document. The temp file in `/tmp` is deleted after upload — Telegram chat history is the archive.
+
+### Restore
+```bash
+# In Telegram
+# 1. Reply RESTORE to a backup file message
+RESTORE
+# 2. Bot replies with a preview (additive merge plan)
+# 3. Reply YES to that preview within 10 minutes to apply
+YES
+```
+Restore is **additive only**: existing entries are skipped, missing ones added. `token` / `chat_id` are never overwritten. Failures during apply roll back via `uci revert`.
+
 ## 🚨 Troubleshooting Quick Fixes
 
 ### Bot not responding
@@ -126,9 +174,11 @@ rm -rf /tmp/dns_locks/*
 
 | File | Purpose |
 |------|---------|
-| `/etc/config/gatekeeper` | Bot token, chat ID, blacklist mode |
-| `/etc/gatekeeper/gatekeeper.nft` | Firewall rules |
-| `/tmp/gatekeeper.log` | Activity logs |
+| `/etc/config/gatekeeper` | Bot token, chat ID, blacklist mode, `schedule_notify`, `disabled` flag, blacklist list, schedule sections |
+| `/etc/config/dhcp` | Static DHCP host entries (read by gatekeeper for static-lease bypass) |
+| `/etc/gatekeeper/gatekeeper.nft` | Firewall rules — includes definitions for the four nftables sets |
+| `/tmp/gatekeeper.log` | Activity logs (auto-rotates at 1000 lines) |
+| `/tmp/sched_active` | Currently-active schedules (rebuilt every `scheduler_tick`) |
 
 ## 🔑 First Time Setup Checklist
 
@@ -148,10 +198,13 @@ rm -rf /tmp/dns_locks/*
 
 1. **Use blacklist mode for home networks** - Much easier than approving every device
 2. **Add guest devices to blacklist temporarily** - They'll need approval while blacklist mode is on
-3. **Use STATUS before extending** - See which device is which ID
-4. **Set up SSH keys** - Makes deployment faster (no password prompt)
-5. **Keep logs clean** - Send `CLEAR` periodically to clean up old data
-6. **Check logs when debugging** - `logread -f` is your friend
+3. **Use STATUS before extending** - See which device is which ID; STATUS also shows `⏰ <name>` for schedule-driven approvals
+4. **Run `BACKUP` before major changes** - You can `RESTORE` if something goes wrong. Use `BACKUP NOSECRETS` if you plan to share the file outside your private chat
+5. **UCI section names disallow hyphens** - `SCHEDADD … living-room-tv` will fail; use `living_room_tv` (the bot now suggests the corrected name automatically)
+6. **Schedules persist; pending state doesn't** - Schedule definitions in UCI survive reboots. The pending RESTORE preview state in `/tmp` does not — reboot or wait > 10 min and the pending preview is gone
+7. **Set up SSH keys** - Makes deployment faster (no password prompt)
+8. **Keep logs clean** - Send `CLEAR` periodically to clean up old data
+9. **Check logs when debugging** - `logread -f | grep -E "gatekeeper|tg_bot"` is your friend
 
 ## 🔗 Links
 

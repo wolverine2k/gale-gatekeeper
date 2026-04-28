@@ -20,7 +20,7 @@ The system operates as a 5-stage event pipeline:
 1. MAC in UCI `dhcp.@host[*].mac`? → `is_static=1`, skip notification (access via static nftables rule)
 2. MAC in `denied_macs` nftables set? → Silently exit
 3. MAC in `approved_macs` nftables set? → Silently exit
-4. `gatekeeper.main.disabled=1`? → Exit immediately (set by DISABLE command; checked first before input parsing)
+4. `gatekeeper.main.disabled=1`? → Exit immediately (set by DISABLE command; persists across `fw4` reloads via UCI)
 5. Blacklist mode ON + MAC not in `blacklist_macs`? → Auto-approve with 24h timeout, send info message
 6. Active schedule for MAC? → Auto-approve until window end, optionally notify (controlled by `gatekeeper.main.schedule_notify`)
 7. Otherwise → Send approval request to Telegram with Approve/Deny buttons + start 5-minute auto-deny background timer
@@ -224,6 +224,8 @@ Always use `2>/dev/null` on the delete (element may not exist).
 ### Modifying Approval Logic
 
 Always check all four nftables sets before sending a notification (order matters — check `denied_macs` before `approved_macs`). Use `grep -q` for silent exit-code-only matching.
+
+After the blacklist-mode check (step 3.5) and **before** the notification (step 4), `gatekeeper.sh` step 3.6 also calls `check_active_schedule_for_mac` and silently auto-approves the MAC until the window's end if a matching enabled schedule is currently active. Any new logic that lives in this part of the validation chain must respect the same priority order: static lease → `denied_macs` → `approved_macs` → `disabled` flag → blacklist mode → **active schedule** → notification.
 
 ### Session ID Mapping
 
