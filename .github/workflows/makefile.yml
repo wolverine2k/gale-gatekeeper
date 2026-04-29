@@ -124,7 +124,7 @@ jobs:
         cat > "${STAGING}/control/control" <<EOF
         Package: luci-app-gatekeeper
         Version: ${PKG_VERSION}-${PKG_RELEASE}
-        Depends: luci-base, gatekeeper, rpcd
+        Depends: luci-base, gatekeeper (>= ${PKG_VERSION}-${PKG_RELEASE}), rpcd
         Section: luci
         Architecture: all
         Installed-Size: ${INSTALLED_SIZE}
@@ -134,6 +134,18 @@ jobs:
          Manages devices, blacklist, schedules, configuration, and backups via the
          router's standard LuCI panel without requiring the Telegram bot.
         EOF
+
+        # postinst: restart rpcd so it discovers the newly-installed
+        # /usr/libexec/rpcd/gatekeeper plugin. Without this, the LuCI UI
+        # gets "Method not found" errors until the user manually restarts.
+        # The IPKG_INSTROOT guard skips the restart during image-build
+        # (offline opkg install into a chroot).
+        cat > "${STAGING}/control/postinst" <<'POSTINST'
+        #!/bin/sh
+        [ -n "$IPKG_INSTROOT" ] || /etc/init.d/rpcd restart
+        exit 0
+        POSTINST
+        chmod 0755 "${STAGING}/control/postinst"
 
         (cd "${STAGING}/data"    && tar czf "${STAGING}/data.tar.gz"    .)
         (cd "${STAGING}/control" && tar czf "${STAGING}/control.tar.gz" .)

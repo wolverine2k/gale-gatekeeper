@@ -1,7 +1,7 @@
 #!/bin/sh
 # /usr/libexec/rpcd/gatekeeper — rpcd ubus backend for luci-app-gatekeeper.
 #
-# Exposes ~28 methods that the LuCI frontend calls to read state and mutate
+# Exposes 31 methods that the LuCI frontend calls to read state and mutate
 # the gatekeeper config / firewall sets without going through the Telegram
 # bot. Designed to be independent of tg_bot.sh — running or not, the LuCI
 # UI works the same.
@@ -222,7 +222,6 @@ list)
   "bl_remove": { "mac": "string" },
   "bl_clear": {},
   "sched_list": { "mac": "string" },
-  "sched_show": { "name": "string" },
   "sched_add": { "mac": "string", "days": "string", "start": "string", "stop": "string", "name": "string", "label": "string" },
   "sched_remove": { "name": "string" },
   "sched_set_enabled": { "name": "string", "enabled": "boolean" },
@@ -360,6 +359,9 @@ case "$METHOD" in
         mac=$(normalize_mac "$(field "$INPUT" .mac)")
         [ -z "$mac" ] && { json_err "invalid mac"; exit 0; }
         nft "delete element inet fw4 approved_macs { $mac }" 2>/dev/null
+        # Delete from denied_macs too: nftables won't refresh the 30m timeout
+        # via plain "add element" if the MAC is already in the denied set.
+        nft "delete element inet fw4 denied_macs { $mac }" 2>/dev/null
         nft "add element inet fw4 denied_macs { $mac timeout 30m }" 2>/dev/null
         echo "$(date '+%Y-%m-%dT%H:%M:%S') $mac - - revoked-luci" >> "$LOG_FILE"
         json_ok
@@ -381,6 +383,10 @@ case "$METHOD" in
         mac=$(normalize_mac "$(field "$INPUT" .mac)")
         [ -z "$mac" ] && { json_err "invalid mac"; exit 0; }
         nft "delete element inet fw4 denied_macs { $mac }" 2>/dev/null
+        # Delete from approved_macs too: nftables won't refresh the 30m timeout
+        # via plain "add element" if the MAC is already approved (e.g. via an
+        # active schedule push).
+        nft "delete element inet fw4 approved_macs { $mac }" 2>/dev/null
         nft "add element inet fw4 approved_macs { $mac timeout 30m }" 2>/dev/null
         echo "$(date '+%Y-%m-%dT%H:%M:%S') $mac - - denial-revoked-approved-luci-30m" >> "$LOG_FILE"
         json_ok
@@ -475,18 +481,6 @@ case "$METHOD" in
             uci_schedules
             printf '}\n'
         fi
-        ;;
-    sched_show)
-        name=$(field "$INPUT" .name | tr 'A-Z' 'a-z')
-        [ -z "$name" ] && { json_err "name required"; exit 0; }
-        if [ "$(uci -q get "gatekeeper.${name}")" != "schedule" ]; then
-            json_err "no schedule with that name"
-            exit 0
-        fi
-        # Fetch the single schedule via the same builder, then jq-filter.
-        printf '{"schedule":'
-        uci_schedules | jq --arg n "$name" '.[] | select(.name == $n)'
-        printf '}\n'
         ;;
     sched_add)
         mac=$(normalize_mac "$(field "$INPUT" .mac)")

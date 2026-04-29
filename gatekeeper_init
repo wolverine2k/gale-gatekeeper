@@ -55,6 +55,16 @@ START=95  # Late boot position (90-99 range for network-related services)
 
 # Main service start function called by procd
 start() {
+    # === SANITY CHECK: shared restore helpers library ===
+    # /usr/lib/gatekeeper/restore_helpers.sh is sourced by tg_bot.sh at startup
+    # and by the LuCI rpcd backend on every call. Missing = bot won't run and
+    # LuCI methods all return errors. Log a loud warning here at boot so the
+    # condition is visible in `logread` rather than only surfacing later.
+    if [ ! -f /usr/lib/gatekeeper/restore_helpers.sh ]; then
+        logger -p daemon.err -t gatekeeper_init \
+            "WARNING: /usr/lib/gatekeeper/restore_helpers.sh missing — tg_bot.sh and luci-app-gatekeeper will fail. Reinstall the gatekeeper package or run deploy.sh again."
+    fi
+
     # === SYNC STATIC DHCP MACS ===
     # Step 1: Clear the static MAC set to prevent accumulation of stale entries
     nft flush set inet fw4 static_macs

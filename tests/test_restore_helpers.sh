@@ -1,7 +1,10 @@
 #!/bin/sh
 # Dev-only unit tests for restore pure-text transforms.
-# Parser awk and is_valid_backup are inlined verbatim into tg_bot.sh.
-# When you change one, change both. Run from repo root:
+# Canonical implementation lives in opkg/usr/lib/gatekeeper/restore_helpers.sh
+# (sourced by tg_bot.sh and the LuCI rpcd backend). This test file inlines
+# its own copies of the parser awk and is_valid_backup so it can run on a
+# dev machine without sourcing the runtime library; when you change the
+# canonical version, mirror the change here too. Run from repo root:
 #   sh tests/test_restore_helpers.sh
 
 set -u

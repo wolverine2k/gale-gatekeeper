@@ -100,8 +100,8 @@ State: `uci get gatekeeper.main.blacklist_mode` (0 or 1). MACs: `gatekeeper.blac
 | `opkg/Makefile` | OpenWrt SDK package recipe (alternative build path for feed integration; CI does not use this) |
 | `opkg/etc/config/gatekeeper` | UCI config template |
 | `opkg/usr/lib/gatekeeper/restore_helpers.sh` | Shared library sourced by `tg_bot.sh` AND the LuCI rpcd backend — `mac_hostname`, `is_valid_backup`, `restore_parse_to_records`, `restore_build_plan`, plus `RESTORE_*` state-file constants. Single source of truth for the BACKUP/RESTORE parser/merge engine |
-| `opkg/luci/usr/libexec/rpcd/gatekeeper` | rpcd ubus backend for `luci-app-gatekeeper` (POSIX shell, ~28 methods) |
-| `opkg/luci/usr/share/luci/menu.d/luci-app-gatekeeper.json` | LuCI menu entries (Network → Services → Gatekeeper) |
+| `opkg/luci/usr/libexec/rpcd/gatekeeper` | rpcd ubus backend for `luci-app-gatekeeper` (POSIX shell, 31 methods) |
+| `opkg/luci/usr/share/luci/menu.d/luci-app-gatekeeper.json` | LuCI menu entries (Services → Gatekeeper) |
 | `opkg/luci/usr/share/rpcd/acl.d/luci-app-gatekeeper.json` | rpcd ACL definitions for the LuCI app's read/write methods |
 | `opkg/luci/htdocs/luci-static/resources/view/gatekeeper/*.js` | LuCI frontend views (overview, devices, blacklist, schedules, backup_restore, settings) |
 
@@ -116,6 +116,9 @@ State: `uci get gatekeeper.main.blacklist_mode` (0 or 1). MACs: `gatekeeper.blac
 ./deploy.sh 192.168.1.1 --scripts-only   # Skip config/init files
 ./deploy.sh 192.168.1.1 --config-only
 ./deploy.sh 192.168.1.1 --no-config      # Deploy all files except config (preserves existing settings)
+./deploy.sh 192.168.1.1 --luci           # Runtime + luci-app-gatekeeper, restart rpcd at the end
+./deploy.sh 192.168.1.1 --luci-only      # ONLY the LuCI app files; iterative mode for rpcd/frontend work
+./deploy.sh 192.168.1.1 --ask-password   # Prompt once for the router root password (requires sshpass); no per-call prompts
 ```
 
 **Quick script update:**
@@ -162,8 +165,10 @@ The workflow builds the `.ipk` directly (no OpenWrt SDK required) by assembling 
 
 **Install from `.ipk` on router:**
 ```bash
-opkg install gatekeeper_1.0.0-1_all.ipk
+opkg install gatekeeper_<version>_all.ipk
+opkg install luci-app-gatekeeper_<version>_all.ipk   # optional companion package
 ```
+Substitute `<version>` with the version baked into the file you downloaded (e.g. `1.0.0-1`). Latest stable releases are at `https://github.com/<owner>/gale-gatekeeper/releases`; both `.ipk` files are attached automatically when a `v*` tag is pushed.
 
 ## Telegram Bot Commands
 
@@ -199,10 +204,10 @@ Schedule definitions live in UCI (`/etc/config/gatekeeper`) as `config schedule 
 
 A separate ipk that adds a browser-based admin interface alongside the bot. The bot and the LuCI app are independent: both read/write the same UCI + nftables state, neither requires the other, and there is no cross-talk between them. The LuCI app is built by the same GitHub Actions workflow as the runtime package, producing a parallel `luci-app-gatekeeper_<version>_all.ipk`.
 
-**Backend** — `/usr/libexec/rpcd/gatekeeper` is a POSIX shell rpcd exec plugin exposing ~28 ubus methods. Method dispatch follows the standard rpcd contract: `$0 list` emits a JSON method-and-params catalog; `$0 call <method>` reads JSON from stdin, writes JSON to stdout. The plugin sources `/usr/lib/gatekeeper/restore_helpers.sh` (provided by the runtime gatekeeper package) so backup/restore behavior matches the bot byte-for-byte.
+**Backend** — `/usr/libexec/rpcd/gatekeeper` is a POSIX shell rpcd exec plugin exposing 31 ubus methods. Method dispatch follows the standard rpcd contract: `$0 list` emits a JSON method-and-params catalog; `$0 call <method>` reads JSON from stdin, writes JSON to stdout. The plugin sources `/usr/lib/gatekeeper/restore_helpers.sh` (provided by the runtime gatekeeper package) so backup/restore behavior matches the bot byte-for-byte.
 
 Method categories:
-- **Status reads**: `get_overview`, `list_active`, `list_denied`, `list_static`, `bl_get_mode`, `bl_list`, `sched_list`, `sched_show`, `tail_log`, `settings_get`, `test_bot`, `backup`.
+- **Status reads**: `get_overview`, `list_active`, `list_denied`, `list_static`, `bl_get_mode`, `bl_list`, `sched_list`, `tail_log`, `settings_get`, `test_bot`, `backup`.
 - **Mutations**: `approve`, `deny`, `extend`, `revoke`, `denied_extend`, `denied_revoke_approve`, `bl_set_mode`, `bl_add`, `bl_remove`, `bl_clear`, `sched_add`, `sched_remove`, `sched_set_enabled`, `enable`, `disable`, `sync`, `clear_logs`, `restore_dryrun`, `restore_apply`, `settings_set`.
 
 All mutations either return `{ok: true, ...}` on success or `{error: "<reason>"}` on failure; UCI mutations always run with `uci revert gatekeeper` on commit failure to avoid partial state.
@@ -217,7 +222,7 @@ All mutations either return `{ok: true, ...}` on success or `{error: "<reason>"}
 - `backup_restore.js` — browser file download/upload with two-step preview-then-apply restore.
 - `settings.js` — UCI form for `main` section + Test-bot connection diagnostic + maintenance buttons.
 
-**Menu** — `/usr/share/luci/menu.d/luci-app-gatekeeper.json` registers `Network → Services → Gatekeeper` with the six sub-pages.
+**Menu** — `/usr/share/luci/menu.d/luci-app-gatekeeper.json` registers `Services → Gatekeeper` with the six sub-pages.
 
 **Bot/UI relationship** — the schedule-helper trio (`expand_days` / `hm_to_min` / `window_active_now`) deliberately stays three-copy duplicated across `tg_bot.sh`, `gatekeeper.sh`, and `tests/test_schedule_helpers.sh` per its existing contract. The restore parser/merge engine (`restore_helpers.sh`) is single-copy because there are now THREE callers (bot, rpcd backend, dev test file uses its own inlined copy). When you change a schedule helper, change all three. When you change anything in `restore_helpers.sh`, also update the inlined copy in `tests/test_restore_helpers.sh` to keep its dev-only test green.
 

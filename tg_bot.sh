@@ -52,8 +52,8 @@
 # - REVOKE [ID]: Immediately revoke network access for a specific guest
 # - DEXTEND [ID]: Extend denial timeout for a specific denied device (30 min)
 # - DREVOKE [ID]: Remove device from denied list and approve for 30 minutes
-# - LOG: Display last 10 entries from activity log
-# - SYNC: Manually resynchronize static DHCP leases from UCI to firewall
+# - LOG: Display last 20 entries from activity log
+# - SYNC: Manually resynchronize static DHCP leases AND blacklist MACs from UCI to firewall
 # - ENABLE: Re-enable gatekeeper (clear bypass switch)
 # - DISABLE: Emergency disable gatekeeper (activate global bypass)
 # - CLEAR: Clear activity logs and hostname cache
@@ -348,8 +348,12 @@ while true; do
 
             # Process APPROVE action
             if [ "$ACT" = "approve" ]; then
-                # Add MAC to approved_macs set with 30-minute timeout
-                # Device gains network access immediately via firewall rules
+                # Add MAC to approved_macs set with 30-minute timeout.
+                # Delete first because nftables won't update an existing
+                # element's timeout via "add element" alone — if the MAC is
+                # already present (e.g. from an active schedule), the new
+                # timeout would silently no-op without the delete.
+                nft "delete element inet fw4 approved_macs { $MAC }" 2>/dev/null
                 nft "add element inet fw4 approved_macs { $MAC timeout 30m }"
                 
                 # Extract hostname from gatekeeper log for display
@@ -431,7 +435,7 @@ while true; do
             MSG="${MSG}*System Control:*\n"
             MSG="${MSG}\`ENABLE\` - Enable gatekeeper filtering\n"
             MSG="${MSG}\`DISABLE\` - Disable gatekeeper (emergency)\n"
-            MSG="${MSG}\`SYNC\` - Resync static DHCP leases\n\n"
+            MSG="${MSG}\`SYNC\` - Resync static DHCP leases AND blacklist MACs from UCI to firewall\n\n"
             MSG="${MSG}*Schedules:*\n"
             MSG="${MSG}\`SCHEDADD <mac> <days> <start>-<stop> [name]\` - Add auto-approve window\n"
             MSG="${MSG}\`SCHEDLIST [mac]\` - List schedules (filter by MAC optional)\n"
@@ -651,6 +655,11 @@ EOF
                 # Remove MAC from denied_macs set
                 nft "delete element inet fw4 denied_macs { $TARGET_MAC }" 2>/dev/null
 
+                # Delete-before-add on approved_macs too: if the MAC is already
+                # approved (e.g. via an active schedule), nftables won't update
+                # the existing element's timeout via plain "add element".
+                nft "delete element inet fw4 approved_macs { $TARGET_MAC }" 2>/dev/null
+
                 # Automatically approve device for 30 minutes
                 nft "add element inet fw4 approved_macs { $TARGET_MAC timeout 30m }"
                 echo "$(date '+%Y-%m-%dT%H:%M:%S') $TARGET_MAC - - denial-revoked-approved-30m" >> "$LOG_FILE"
@@ -718,6 +727,10 @@ EOF
             if [ -n "$TARGET_MAC" ]; then
                 # Remove MAC from approved_macs set (blocks network access immediately)
                 nft "delete element inet fw4 approved_macs { $TARGET_MAC }" 2>/dev/null
+                # Delete-before-add on denied_macs too: if the MAC is already
+                # denied (e.g. from an earlier auto-deny timer), nftables won't
+                # refresh the timeout via plain "add element".
+                nft "delete element inet fw4 denied_macs { $TARGET_MAC }" 2>/dev/null
                 # Add to denied_macs for 30 minutes to suppress reconnect notifications
                 nft "add element inet fw4 denied_macs { $TARGET_MAC timeout 30m }"
                 echo "$(date '+%Y-%m-%dT%H:%M:%S') $TARGET_MAC - - revoked" >> "$LOG_FILE"
@@ -730,7 +743,7 @@ EOF
             curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=$MSG"
 
         # === LOG COMMAND ===
-        # Display last 10 entries from gatekeeper activity log
+        # Display last 20 entries from gatekeeper activity log
         # Log contains device connection events written by gatekeeper.sh
         elif [ "$CMD" = "LOG" ]; then
             # Read last 20 log entries; report empty state if log file absent or empty
@@ -746,21 +759,29 @@ EOF
                  -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"📜 *Recent Logs:*\\n\`$LOGS\`\",\"parse_mode\":\"Markdown\"}"
 
         # === SYNC COMMAND ===
-        # Manually resynchronize static DHCP leases from UCI to firewall
-        # Useful after adding/removing static leases in UCI config
+        # Manually resynchronize MAC sets from UCI to firewall — covers BOTH
+        # static_macs (static DHCP leases in /etc/config/dhcp) AND blacklist_macs
+        # (gatekeeper.blacklist.mac list in /etc/config/gatekeeper). Matches the
+        # LuCI Settings page's "Sync MAC sets" button. Useful after editing
+        # UCI directly without going through bot/UI commands.
         elif [ "$CMD" = "SYNC" ]; then
-            # Clear existing static_macs set before rebuilding
-            nft flush set inet fw4 static_macs
-            
-            # Iterate through all UCI DHCP static hosts and add their MACs
-            # Some hosts may have multiple MACs (space-separated)
-            i=0; while M=$(uci -q get dhcp.@host[$i].mac); do
-                for sm in $M; do nft "add element inet fw4 static_macs { $sm }"; done
-                i=$((i+1))
-            done
-            
-            # Report number of static leases synchronized
-            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=🔄 Synced $i static leases."
+            if [ -x /usr/bin/gatekeeper_sync.sh ]; then
+                SYNC_OUT=$(/usr/bin/gatekeeper_sync.sh all 2>&1)
+                STATIC_COUNT=$(echo "$SYNC_OUT" | grep -oE 'synchronized [0-9]+ static' | grep -oE '[0-9]+' | head -1)
+                BL_COUNT=$(echo "$SYNC_OUT" | grep -oE 'synchronized [0-9]+ blacklist' | grep -oE '[0-9]+' | head -1)
+                STATIC_COUNT=${STATIC_COUNT:-0}
+                BL_COUNT=${BL_COUNT:-0}
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=🔄 Synced $STATIC_COUNT static and $BL_COUNT blacklist MACs."
+            else
+                # Fallback: in-bot static-only sync. Keeps SYNC working even if
+                # the helper script is missing — but the user should reinstall.
+                nft flush set inet fw4 static_macs
+                i=0; while M=$(uci -q get dhcp.@host[$i].mac); do
+                    for sm in $M; do nft "add element inet fw4 static_macs { $sm }"; done
+                    i=$((i+1))
+                done
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=🔄 Synced $i static leases (blacklist sync unavailable: gatekeeper_sync.sh missing)."
+            fi
 
         # === ENABLE COMMAND ===
         # Re-enable gatekeeper after emergency disable

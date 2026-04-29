@@ -84,6 +84,39 @@ Deploys scripts, firewall rules, and init scripts while preserving the existing 
 ./deploy.sh 192.168.1.1 --no-config
 ```
 
+### Deploy LuCI app alongside the runtime
+
+Deploys the runtime package AND the `luci-app-gatekeeper` files (rpcd backend, ACL, menu manifest, frontend views), then restarts `rpcd` so it discovers the new plugin:
+
+```bash
+./deploy.sh 192.168.1.1 --luci
+```
+
+### Deploy ONLY the LuCI app (skip the runtime)
+
+Useful when iterating on the rpcd backend or frontend JS without touching the bot:
+
+```bash
+./deploy.sh 192.168.1.1 --luci-only
+```
+
+This skips all runtime files (scripts, firewall, init, config) and only restarts `rpcd`, not the bot or trigger listener.
+
+### Type the router password once per run
+
+If you haven't set up SSH key auth, every `ssh`/`scp` call prompts for the password. The `--ask-password` flag prompts once at the start and reuses that password for every call in the run. Combine with any other flags.
+
+```bash
+./deploy.sh 192.168.1.1 --ask-password           # prompts once, full deploy
+./deploy.sh 192.168.1.1 --luci --ask-password    # works alongside other flags
+```
+
+Requires `sshpass`:
+- macOS: `brew install hudochenkov/sshpass/sshpass`
+- Debian/Ubuntu: `apt-get install sshpass`
+
+The password is held in the script's `SSHPASS` env var only — it never appears in argv (so `ps aux` and shell history stay clean). For unattended/automated runs, prefer SSH keys (`ssh-copy-id root@<router>`) over a password — `--ask-password` is for interactive use.
+
 ---
 
 ## What Gets Deployed
@@ -118,17 +151,19 @@ The runtime `gatekeeper` package handles only the bot + firewall. A separate sib
 ### Install on the router
 
 ```bash
-# Copy the LuCI ipk over (or download from a tagged GitHub release)
-scp luci-app-gatekeeper_1.0.0-1_all.ipk root@192.168.1.1:/tmp/
-ssh root@192.168.1.1 "opkg install /tmp/luci-app-gatekeeper_1.0.0-1_all.ipk"
+# Copy the LuCI ipk over (or download from a tagged GitHub release).
+# Substitute <version> with the actual version baked into the file you downloaded
+# (e.g. 1.0.0-1, 1.2.3-1).
+scp luci-app-gatekeeper_<version>_all.ipk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 "opkg install /tmp/luci-app-gatekeeper_<version>_all.ipk"
 ```
 
-Both `.ipk` files are produced by the project's GitHub Actions workflow on every push to `main` and on every tag. They're attached to GitHub Releases automatically.
+Both `.ipk` files are produced by the project's GitHub Actions workflow on every push to `main` and on every tag. They're attached to GitHub Releases automatically — see `https://github.com/<owner>/gale-gatekeeper/releases`.
 
 ### Access
 
 ```
-http://<router-ip>/cgi-bin/luci → Network → Services → Gatekeeper
+http://<router-ip>/cgi-bin/luci → Services → Gatekeeper
 ```
 
 Auth uses your router's standard LuCI admin credentials.
@@ -185,6 +220,11 @@ scp tg_bot.sh root@192.168.1.1:/usr/bin/
 scp gatekeeper_trigger.sh root@192.168.1.1:/usr/bin/
 scp dnsmasq_trigger.sh root@192.168.1.1:/usr/bin/
 scp gatekeeper_sync.sh root@192.168.1.1:/usr/bin/
+
+# Shared library (sourced by tg_bot.sh AND the LuCI rpcd backend)
+# Skipping this leaves the bot non-functional — it sources this file at startup.
+ssh root@192.168.1.1 "mkdir -p /usr/lib/gatekeeper"
+scp opkg/usr/lib/gatekeeper/restore_helpers.sh root@192.168.1.1:/usr/lib/gatekeeper/
 
 # Firewall rules
 ssh root@192.168.1.1 "mkdir -p /etc/gatekeeper"

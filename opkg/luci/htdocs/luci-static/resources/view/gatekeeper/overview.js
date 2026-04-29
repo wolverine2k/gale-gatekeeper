@@ -124,15 +124,6 @@ return view.extend({
 			])
 		]);
 
-		var countsRow = E('div', { 'class': 'gk-counts-row' }, [
-			countCard(_('Active'), counts.active || 0, _('approved guests')),
-			countCard(_('Denied'), counts.denied || 0, _('temporarily blocked')),
-			countCard(_('Static'), counts.static || 0, _('permanent whitelist')),
-			countCard(_('Blacklist'), counts.blacklist || 0, _('require approval')),
-			countCard(_('Schedules'), counts.schedules || 0,
-				_('total') + ' · ' + (counts.active_schedules || 0) + ' ' + _('active now'))
-		]);
-
 		var logBox = E('pre', { 'id': 'gk-log-tail', 'class': 'gk-log-tail' },
 			logEntry.lines || _('(no recent activity)'));
 

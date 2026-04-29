@@ -69,4 +69,56 @@ define Package/gatekeeper/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/etc/config/gatekeeper $(1)/etc/config/gatekeeper
 endef
 
+define Package/luci-app-gatekeeper
+  SECTION:=luci
+  CATEGORY:=LuCI
+  SUBMENU:=3. Applications
+  TITLE:=LuCI web interface for Gatekeeper
+  URL:=https://github.com/naresh-mehta/gale-gatekeeper
+  # Pin gatekeeper to >= same version: the rpcd backend sources
+  # /usr/lib/gatekeeper/restore_helpers.sh which is shipped by the runtime
+  # gatekeeper package. An older runtime would lack the file and break the
+  # rpcd backend at every call.
+  DEPENDS:=+luci-base +gatekeeper (>= $(PKG_VERSION)-$(PKG_RELEASE)) +rpcd
+endef
+
+define Package/luci-app-gatekeeper/description
+Browser-based admin UI for the Gatekeeper network access control system.
+Manages devices, blacklist, schedules, configuration, and backups via the
+router's standard LuCI panel without requiring the Telegram bot. Independent
+of the bot — both surfaces share the same UCI + nftables state, neither
+requires the other.
+
+Six pages under Services -> Gatekeeper:
+- Overview (status cards + log tail + auto-refresh)
+- Devices (active / denied / static + per-row Approve/Deny/Extend/Revoke)
+- Blacklist (mode toggle + MAC list editor)
+- Schedules (CRUD + day-preset selector + pause/resume)
+- Backup / Restore (download + upload + preview-then-apply)
+- Settings (token / chat_id / mode flags + Test bot connection)
+endef
+
+define Package/luci-app-gatekeeper/install
+	$(INSTALL_DIR) $(1)/usr/libexec/rpcd
+	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/gatekeeper
+	$(INSTALL_BIN)  $(PKG_BUILD_DIR)/opkg/luci/usr/libexec/rpcd/gatekeeper $(1)/usr/libexec/rpcd/gatekeeper
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/opkg/luci/usr/share/luci/menu.d/luci-app-gatekeeper.json $(1)/usr/share/luci/menu.d/luci-app-gatekeeper.json
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/opkg/luci/usr/share/rpcd/acl.d/luci-app-gatekeeper.json $(1)/usr/share/rpcd/acl.d/luci-app-gatekeeper.json
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/opkg/luci/htdocs/luci-static/resources/view/gatekeeper/*.js $(1)/www/luci-static/resources/view/gatekeeper/
+endef
+
+# postinst: restart rpcd so it discovers the newly-installed
+# /usr/libexec/rpcd/gatekeeper plugin. Without this, the LuCI UI returns
+# "Method not found" until the user manually restarts. The IPKG_INSTROOT
+# guard skips the restart during image-build (offline opkg install into a
+# chroot). Note: $$ is escaped for Make so the shell sees a single $.
+define Package/luci-app-gatekeeper/postinst
+#!/bin/sh
+[ -n "$$IPKG_INSTROOT" ] || /etc/init.d/rpcd restart
+exit 0
+endef
+
 $(eval $(call BuildPackage,gatekeeper))
+$(eval $(call BuildPackage,luci-app-gatekeeper))

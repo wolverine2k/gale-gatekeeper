@@ -323,6 +323,7 @@ return view.extend({
 			].join('\n')),
 			E('h2', {}, _('Schedules')),
 			E('p', {}, _('Time-window auto-approval rules. During an active window, the configured MAC is silently approved. Multiple schedules per MAC are supported; cross-midnight windows (stop ≤ start) work too.')),
+			E('p', { 'style': 'color: #666; font-size: 0.9em;' }, _('Note: schedule changes can take up to 30 seconds to take effect. New or modified active-window schedules become enforced on the next reconciliation tick.')),
 			E('div', { 'style': 'margin: 1em 0;' }, [
 				addBtn,
 				E('button', {

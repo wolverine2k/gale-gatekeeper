@@ -3,7 +3,11 @@
 ## 🚀 One-Line Deployment
 
 ```bash
-./deploy.sh 192.168.1.1
+./deploy.sh 192.168.1.1                  # runtime gatekeeper only
+./deploy.sh 192.168.1.1 --luci           # runtime + LuCI app (restarts rpcd)
+./deploy.sh 192.168.1.1 --luci-only      # iterate on LuCI files only
+./deploy.sh 192.168.1.1 --no-config      # preserve existing /etc/config/gatekeeper
+./deploy.sh 192.168.1.1 --ask-password   # prompt once for router password (needs sshpass)
 ```
 
 ## 🖥️ LuCI Web UI (optional)
@@ -15,7 +19,7 @@ scp luci-app-gatekeeper_*.ipk root@192.168.1.1:/tmp/
 ssh root@192.168.1.1 "opkg install /tmp/luci-app-gatekeeper_*.ipk"
 ```
 
-Then browse to `http://<router-ip>/cgi-bin/luci → Network → Services → Gatekeeper`. Six pages:
+Then browse to `http://<router-ip>/cgi-bin/luci → Services → Gatekeeper`. Six pages:
 
 | Page | Use it for |
 |------|------------|

@@ -8,6 +8,19 @@ set -u
 PASS=0
 FAIL=0
 
+# `date -d "today 17:00"` syntax is a GNU coreutils extension; the macOS BSD
+# `date` rejects it. On macOS, prefer `gdate` if installed (`brew install
+# coreutils` ships it). Linux routers / CI runners use plain `date` and have
+# the GNU implementation natively. Override with DATE_CMD=/path if needed.
+if [ -z "${DATE_CMD:-}" ]; then
+    if command -v gdate >/dev/null 2>&1; then
+        DATE_CMD=gdate
+    else
+        DATE_CMD=date
+    fi
+fi
+export DATE_CMD
+
 assert_eq() {
     local label="$1" got="$2" want="$3"
     if [ "$got" = "$want" ]; then
@@ -68,7 +81,7 @@ window_active_now() {
         echo "$expanded" | tr ' ' '\n' | grep -qx "$today_dow" || return 0
         [ "$now_m" -ge "$start_m" ] || return 0
         [ "$now_m" -lt "$stop_m" ] || return 0
-        date -d "today $stop" +%s
+        ${DATE_CMD:-date} -d "today $stop" +%s
     else
         # Cross-midnight: today $start -> tomorrow $stop
         # Derive yesterday from today_dow (no system clock dependency)
@@ -78,10 +91,10 @@ window_active_now() {
         ')
         if echo "$expanded" | tr ' ' '\n' | grep -qx "$today_dow" \
            && [ "$now_m" -ge "$start_m" ]; then
-            date -d "tomorrow $stop" +%s
+            ${DATE_CMD:-date} -d "tomorrow $stop" +%s
         elif echo "$expanded" | tr ' ' '\n' | grep -qx "$yesterday_dow" \
              && [ "$now_m" -lt "$stop_m" ]; then
-            date -d "today $stop" +%s
+            ${DATE_CMD:-date} -d "today $stop" +%s
         fi
     fi
 }

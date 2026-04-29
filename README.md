@@ -1,6 +1,6 @@
 # Gatekeeper - Telegram Network Access Control for OpenWrt
 
-A Telegram-based network access control system for OpenWrt routers. Get instant notifications when devices connect to your network and approve/deny access with a simple button press.
+A Telegram-based network access control system for OpenWrt routers. Get instant notifications when devices connect to your network and approve/deny access with a simple button press. An optional companion package, **`luci-app-gatekeeper`**, adds a full browser-based admin interface alongside the bot — install one, the other, or both.
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Platform: OpenWrt](https://img.shields.io/badge/Platform-OpenWrt-00B5E2)
@@ -16,6 +16,7 @@ A Telegram-based network access control system for OpenWrt routers. Get instant 
 - **Emergency Bypass** - Global off-switch for emergencies
 
 ### Advanced Features
+- **LuCI Web UI** ⭐ NEW - Optional `luci-app-gatekeeper` sibling package adds a six-page browser admin interface (Overview, Devices, Blacklist, Schedules, Backup/Restore, Settings) under `Services → Gatekeeper`. Independent of the Telegram bot — both surfaces share the same UCI + nftables state, neither requires the other. Auth uses LuCI's standard ACL (router admin password). See the LuCI Web UI section below for details.
 - **Scheduled Auto-Approval** ⭐ NEW - Time-window-based MAC auto-approval. Multiple schedules per MAC; per-day or daily/weekdays/weekends; cross-midnight windows supported. Hybrid push/pop (proactive at window start, reactive on mid-window DHCP events).
 - **Configuration Backup** ⭐ NEW - One-command Telegram-driven UCI snapshot (`BACKUP`); optional `NOSECRETS` variant blanks token/chat_id; uploaded as a Telegram document.
 - **Configuration Restore** ⭐ NEW - Reply `RESTORE` to a backup file, then `YES` to confirm. Additive merge (skip duplicates), two-phase apply with revert-on-failure, never overwrites token/chat_id.
@@ -34,6 +35,9 @@ A Telegram-based network access control system for OpenWrt routers. Get instant 
 - **Idempotent Operations** - Safe to run multiple times without side effects
 
 ## 📸 Screenshots
+
+LuCI Web Interface
+![Gatekeeper LuCI](https://github.com/wolverine2k/gale-gatekeeper/blob/main/luciScreen.png)
 
 When a new device connects:
 ```
@@ -86,7 +90,7 @@ From your development machine:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/gale-gatekeeper.git
+git clone https://github.com/wolverine2k/gale-gatekeeper.git
 cd gale-gatekeeper
 
 # Make deploy script executable
@@ -158,7 +162,7 @@ opkg install luci-app-gatekeeper_<version>_all.ipk
 The LuCI app depends on the runtime `gatekeeper` package, `luci-base`, and `rpcd`. After install, navigate in your router's LuCI panel to:
 
 ```
-Network → Services → Gatekeeper
+Services → Gatekeeper
 ```
 
 ### What's there
@@ -212,7 +216,7 @@ Auth uses LuCI's standard ACL — anyone with router admin credentials can use t
 ### System Control
 | Command | Description |
 |---------|-------------|
-| `SYNC` | Manually resync static DHCP MACs |
+| `SYNC` | Manually resync static DHCP **and** blacklist MACs from UCI to firewall |
 | `ENABLE` | Re-enable gatekeeper (clear bypass) |
 | `DISABLE` | Emergency disable (bypass all filtering) |
 | `LOG` | Display recent activity logs |
@@ -308,6 +312,10 @@ The system uses 4 nftables sets for access control:
 ├── dnsmasq_trigger.sh         # DHCP event bridge
 └── gatekeeper_sync.sh         # Manual sync utility
 
+/usr/lib/gatekeeper/
+└── restore_helpers.sh         # Shared library — sourced by tg_bot.sh
+                               # and (if installed) the LuCI rpcd backend
+
 /etc/gatekeeper/
 └── gatekeeper.nft             # Firewall rules & set definitions
 
@@ -329,6 +337,24 @@ The system uses 4 nftables sets for access control:
 ├── gatekeeper_timer_<MAC>     # Per-MAC 5-min auto-deny timer PID
 ├── sched_active               # Currently-active schedules (rebuilt every scheduler_tick)
 └── sched_lock                 # flock guard for scheduler_tick single-flight
+
+# Installed by the optional `luci-app-gatekeeper` ipk:
+/usr/libexec/rpcd/
+└── gatekeeper                 # rpcd ubus backend (POSIX shell, 31 methods)
+
+/usr/share/luci/menu.d/
+└── luci-app-gatekeeper.json   # LuCI menu manifest (Services → Gatekeeper)
+
+/usr/share/rpcd/acl.d/
+└── luci-app-gatekeeper.json   # rpcd ACL definitions
+
+/www/luci-static/resources/view/gatekeeper/
+├── overview.js                # Overview page (status cards + log tail)
+├── devices.js                 # Devices page (active / denied / static tables)
+├── blacklist.js               # Blacklist page (mode toggle + MAC editor)
+├── schedules.js               # Schedules page (CRUD + day-preset modal)
+├── backup_restore.js          # Backup / Restore page
+└── settings.js                # Settings page (token / chat_id / Test bot)
 ```
 
 ## 🔧 Configuration
@@ -470,9 +496,11 @@ rm -rf /tmp/dns_locks/*
 
 ## 📚 Additional Documentation
 
-- **[DEPLOY.md](DEPLOY.md)** - Detailed deployment guide with manual instructions
+- **[DEPLOY.md](DEPLOY.md)** - Detailed deployment guide, including LuCI ipk install instructions
+- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Cheat sheet for the most common commands and workflows
+- **[CHANGELOG.md](CHANGELOG.md)** - Release history and feature additions
 - **[CLAUDE.md](CLAUDE.md)** - Technical documentation for developers and AI assistants
-- **[deploy.sh](deploy.sh)** - Automated deployment script
+- **[deploy.sh](deploy.sh)** - Automated deployment script (runtime package; LuCI app installs separately via `opkg install`)
 
 ## 🔄 Updating
 
@@ -487,6 +515,17 @@ git pull
 
 # Deploy without overwriting existing config (preserves token/chat_id/settings)
 ./deploy.sh 192.168.1.1 --no-config
+
+# Deploy runtime + the LuCI app (also restarts rpcd so the new plugin is picked up)
+./deploy.sh 192.168.1.1 --luci
+
+# Iterate on LuCI files only (skip runtime; faster for rpcd/frontend work)
+./deploy.sh 192.168.1.1 --luci-only
+
+# Prompt once for the router root password (requires `sshpass`); avoids
+# repeated password prompts during the deploy. SSH keys are still preferred
+# for unattended use (ssh-copy-id root@router).
+./deploy.sh 192.168.1.1 --ask-password
 
 # Services will be restarted automatically
 ```
@@ -504,6 +543,17 @@ ssh root@192.168.1.1 << 'EOF'
 /etc/init.d/gatekeeper_trigger_listener restart
 EOF
 ```
+
+### Updating the LuCI app
+
+The LuCI app ships as a separate ipk and updates independently of the runtime package. No service restart is needed — the new files are picked up on the next page load:
+
+```bash
+scp luci-app-gatekeeper_<new-version>_all.ipk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 "opkg install /tmp/luci-app-gatekeeper_<new-version>_all.ipk"
+```
+
+The `.ipk` is built and attached to every tagged GitHub Release alongside the runtime package — see [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## 🔐 Security Considerations
 
@@ -538,8 +588,8 @@ Naresh Mehta - [naresh.se](https://www.naresh.se/)
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/gale-gatekeeper/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/gale-gatekeeper/discussions)
+- **Issues**: [GitHub Issues](https://github.com/wolverine2k/gale-gatekeeper/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/wolverine2k/gale-gatekeeper/discussions)
 
 ---
 
