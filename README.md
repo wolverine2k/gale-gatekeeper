@@ -1,9 +1,18 @@
-# Gatekeeper - Telegram Network Access Control for OpenWrt
+<p align="center">
+  <img src="assets/banner.svg" alt="Gatekeeper - Telegram Network Access Control for OpenWrt" width="900" />
+</p>
+
+<h1 align="center">
+  <img src="assets/icon.svg" alt="" width="36" align="center" />
+  Gatekeeper - Telegram Network Access Control for OpenWrt
+</h1>
 
 A Telegram-based network access control system for OpenWrt routers. Get instant notifications when devices connect to your network and approve/deny access with a simple button press. An optional companion package, **`luci-app-gatekeeper`**, adds a full browser-based admin interface alongside the bot — install one, the other, or both.
 
-![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
-![Platform: OpenWrt](https://img.shields.io/badge/Platform-OpenWrt-00B5E2)
+<p align="center">
+  <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" />
+  <img src="https://img.shields.io/badge/Platform-OpenWrt-00B5E2" alt="Platform: OpenWrt" />
+</p>
 
 ## 🎯 Features
 
@@ -37,7 +46,7 @@ A Telegram-based network access control system for OpenWrt routers. Get instant 
 ## 📸 Screenshots
 
 LuCI Web Interface
-![Gatekeeper LuCI](https://github.com/wolverine2k/gale-gatekeeper/blob/main/luciScreen.png)
+![Gatekeeper LuCI](assets/luciScreen.png)
 
 When a new device connects:
 ```
