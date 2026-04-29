@@ -1,0 +1,52 @@
+{
+	"luci-app-gatekeeper": {
+		"description": "Grants access to the gatekeeper rpcd backend (UI and admin actions for the Gatekeeper network access control system).",
+		"read": {
+			"ubus": {
+				"gatekeeper": [
+					"get_overview",
+					"list_active",
+					"list_denied",
+					"list_static",
+					"bl_get_mode",
+					"bl_list",
+					"sched_list",
+					"sched_show",
+					"tail_log",
+					"settings_get",
+					"test_bot",
+					"backup"
+				]
+			}
+		},
+		"write": {
+			"ubus": {
+				"gatekeeper": [
+					"approve",
+					"deny",
+					"extend",
+					"revoke",
+					"denied_extend",
+					"denied_revoke_approve",
+					"bl_set_mode",
+					"bl_add",
+					"bl_remove",
+					"bl_clear",
+					"sched_add",
+					"sched_remove",
+					"sched_set_enabled",
+					"enable",
+					"disable",
+					"sync",
+					"clear_logs",
+					"restore_dryrun",
+					"restore_apply",
+					"settings_set"
+				]
+			},
+			"file": {
+				"/etc/config/gatekeeper": [ "read", "write" ]
+			}
+		}
+	}
+}

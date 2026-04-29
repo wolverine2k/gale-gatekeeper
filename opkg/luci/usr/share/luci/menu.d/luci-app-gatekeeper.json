@@ -1,0 +1,79 @@
+{
+	"admin/services/gatekeeper": {
+		"title": "Gatekeeper",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "gatekeeper/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-gatekeeper" ]
+		}
+	},
+	"admin/services/gatekeeper/overview": {
+		"title": "Overview",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "gatekeeper/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-gatekeeper" ]
+		}
+	},
+	"admin/services/gatekeeper/devices": {
+		"title": "Devices",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "gatekeeper/devices"
+		},
+		"depends": {
+			"acl": [ "luci-app-gatekeeper" ]
+		}
+	},
+	"admin/services/gatekeeper/blacklist": {
+		"title": "Blacklist",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "gatekeeper/blacklist"
+		},
+		"depends": {
+			"acl": [ "luci-app-gatekeeper" ]
+		}
+	},
+	"admin/services/gatekeeper/schedules": {
+		"title": "Schedules",
+		"order": 40,
+		"action": {
+			"type": "view",
+			"path": "gatekeeper/schedules"
+		},
+		"depends": {
+			"acl": [ "luci-app-gatekeeper" ]
+		}
+	},
+	"admin/services/gatekeeper/backup_restore": {
+		"title": "Backup / Restore",
+		"order": 50,
+		"action": {
+			"type": "view",
+			"path": "gatekeeper/backup_restore"
+		},
+		"depends": {
+			"acl": [ "luci-app-gatekeeper" ]
+		}
+	},
+	"admin/services/gatekeeper/settings": {
+		"title": "Settings",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "gatekeeper/settings"
+		},
+		"depends": {
+			"acl": [ "luci-app-gatekeeper" ]
+		}
+	}
+}

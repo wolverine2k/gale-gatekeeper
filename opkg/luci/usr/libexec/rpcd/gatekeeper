@@ -1,0 +1,845 @@
+#!/bin/sh
+# /usr/libexec/rpcd/gatekeeper — rpcd ubus backend for luci-app-gatekeeper.
+#
+# Exposes ~28 methods that the LuCI frontend calls to read state and mutate
+# the gatekeeper config / firewall sets without going through the Telegram
+# bot. Designed to be independent of tg_bot.sh — running or not, the LuCI
+# UI works the same.
+#
+# Convention (rpcd exec plugin):
+#   $0 list                 → emit JSON describing all methods + params
+#   $0 call <method>        → read JSON from stdin, write JSON to stdout
+#
+# All methods return either { ... } on success or { "error": "<reason>" }
+# on failure. Timestamps are unix epochs; MACs are lowercased; section
+# names are stable UCI identifiers.
+
+# Set up the contract that the shared restore-helpers library expects.
+NAME_MAP="/tmp/mac_names"
+LOG_FILE="/tmp/gatekeeper.log"
+
+# Source shared helpers (mac_hostname, is_valid_backup,
+# restore_parse_to_records, restore_build_plan + RESTORE_* constants).
+# This file is part of the gatekeeper runtime package, so it's always
+# present when this rpcd plugin is installed (luci-app-gatekeeper depends
+# on gatekeeper).
+. /usr/lib/gatekeeper/restore_helpers.sh
+
+# ---- helpers ---------------------------------------------------------------
+
+# json_escape <s> — escape a string for embedding in a JSON value.
+json_escape() {
+    # Use jq when available (always is on OpenWrt — it's a hard dep of
+    # the runtime gatekeeper package).
+    printf '%s' "$1" | jq -Rs .
+}
+
+# json_string <s> — print a JSON string (with quotes) for the given value.
+json_string() {
+    json_escape "$1"
+}
+
+# json_ok — print the canonical success object.
+json_ok() {
+    echo '{"ok":true}'
+}
+
+# json_err <reason> — print an error object.
+json_err() {
+    printf '{"error":%s}\n' "$(json_escape "$1")"
+}
+
+# read_input — emit stdin JSON to a temp file path on stdout.
+read_input() {
+    f=$(mktemp -t gk-rpc.XXXXXX)
+    cat > "$f"
+    echo "$f"
+}
+
+# field <json-file> <jq-expr> — extract a field from input JSON.
+field() {
+    jq -r "$2 // empty" < "$1"
+}
+
+# field_raw <json-file> <jq-expr> — same as field but without // empty
+# fallback (preserves true/false/0/null distinctions).
+field_raw() {
+    jq -r "$2" < "$1"
+}
+
+# normalize_mac <mac> — lowercase + validate. Echo empty if invalid.
+normalize_mac() {
+    m=$(echo "$1" | tr 'A-Z' 'a-z')
+    if echo "$m" | grep -qE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'; then
+        echo "$m"
+    fi
+}
+
+# parse_remaining_secs <"29m59s" | "1h2m3s" | "1d23h59m59s" | "59s">
+# Mirrors tg_bot.sh's helper. Output: total seconds.
+parse_remaining_secs() {
+    t=$1
+    d=0; h=0; m=0; s=0
+    [ -n "$(echo "$t" | grep 'd')" ] && d=$(echo "$t" | sed 's/d.*//; s/[^0-9]//g')
+    hms=$(echo "$t" | sed 's/^[0-9]*d//')
+    [ -n "$(echo "$hms" | grep 'h')" ] && h=$(echo "$hms" | sed 's/h.*//; s/.*[^0-9]//')
+    [ -n "$(echo "$hms" | grep 'm')" ] && m=$(echo "$hms" | sed 's/m.*//; s/.*h//; s/[^0-9]//g')
+    s=$(echo "$hms" | sed 's/s.*//; s/.*m//; s/.*h//; s/[^0-9]//g')
+    [ -z "$s" ] && s=0
+    echo $((d * 86400 + h * 3600 + m * 60 + s))
+}
+
+# nft_set_macs_with_timeout <set-name> — emit JSON array of
+# {mac, remaining_seconds, expiry_epoch, hostname, schedule_name?}
+nft_set_macs_with_timeout() {
+    set_name="$1"
+    now=$(date +%s)
+    raw=$(nft list set inet fw4 "$set_name" 2>/dev/null | grep "expires")
+    [ -z "$raw" ] && { echo '[]'; return; }
+    first=1
+    printf '['
+    echo "$raw" | while IFS= read -r line; do
+        mac=$(echo "$line" | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}" | tr 'A-Z' 'a-z')
+        [ -z "$mac" ] && continue
+        timestr=$(echo "$line" | sed 's/.*expires //; s/s.*/s/; s/,//g')
+        secs=$(parse_remaining_secs "$timestr")
+        expiry=$((now + secs))
+        host=$(mac_hostname "$mac")
+        sched=""
+        if [ -f /tmp/sched_active ]; then
+            sched=$(awk -v m="$mac" '$2 == m {print $1; exit}' /tmp/sched_active)
+        fi
+        if [ "$first" = "1" ]; then first=0; else printf ','; fi
+        printf '{"mac":%s,"remaining_seconds":%s,"expiry_epoch":%s,"hostname":%s,"schedule":%s}' \
+            "$(json_escape "$mac")" "$secs" "$expiry" \
+            "$(json_escape "$host")" "$(json_escape "$sched")"
+    done
+    printf ']'
+}
+
+# nft_set_macs_no_timeout <set-name> — emit JSON array of {mac, hostname}.
+nft_set_macs_no_timeout() {
+    set_name="$1"
+    macs=$(nft list set inet fw4 "$set_name" 2>/dev/null \
+        | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}" \
+        | tr 'A-Z' 'a-z' | sort -u)
+    first=1
+    printf '['
+    for m in $macs; do
+        host=$(mac_hostname "$m")
+        if [ "$first" = "1" ]; then first=0; else printf ','; fi
+        printf '{"mac":%s,"hostname":%s}' "$(json_escape "$m")" "$(json_escape "$host")"
+    done
+    printf ']'
+}
+
+# uci_blacklist_macs — emit JSON array of {mac, hostname, currently_online}.
+uci_blacklist_macs() {
+    macs=$(uci show gatekeeper.blacklist 2>/dev/null \
+        | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}" \
+        | tr 'A-Z' 'a-z' | sort -u)
+    first=1
+    printf '['
+    for m in $macs; do
+        host=$(mac_hostname "$m")
+        online=false
+        # Currently online if MAC appears in current dnsmasq leases.
+        if grep -qi "$m" /tmp/dhcp.leases 2>/dev/null; then
+            online=true
+        fi
+        if [ "$first" = "1" ]; then first=0; else printf ','; fi
+        printf '{"mac":%s,"hostname":%s,"online":%s}' \
+            "$(json_escape "$m")" "$(json_escape "$host")" "$online"
+    done
+    printf ']'
+}
+
+# uci_schedules — emit JSON array of full schedule records.
+uci_schedules() {
+    sections=$(uci show gatekeeper 2>/dev/null \
+        | sed -n 's/^gatekeeper\.\([^.=]*\)=schedule$/\1/p')
+    first=1
+    printf '['
+    for sec in $sections; do
+        mac=$(uci -q get "gatekeeper.${sec}.mac" | tr 'A-Z' 'a-z')
+        days=$(uci -q get "gatekeeper.${sec}.days")
+        start=$(uci -q get "gatekeeper.${sec}.start")
+        stop=$(uci -q get "gatekeeper.${sec}.stop")
+        label=$(uci -q get "gatekeeper.${sec}.label")
+        enabled=$(uci -q get "gatekeeper.${sec}.enabled" || echo 1)
+        host=$(mac_hostname "$mac")
+        active=false
+        end_epoch=0
+        if [ -f /tmp/sched_active ]; then
+            line=$(grep "^${sec} " /tmp/sched_active 2>/dev/null | head -n 1)
+            if [ -n "$line" ]; then
+                active=true
+                end_epoch=$(echo "$line" | awk '{print $3}')
+            fi
+        fi
+        if [ "$first" = "1" ]; then first=0; else printf ','; fi
+        printf '{"name":%s,"mac":%s,"days":%s,"start":%s,"stop":%s,"label":%s,"enabled":%s,"hostname":%s,"active":%s,"end_epoch":%s}' \
+            "$(json_escape "$sec")" "$(json_escape "$mac")" \
+            "$(json_escape "$days")" "$(json_escape "$start")" \
+            "$(json_escape "$stop")" "$(json_escape "$label")" \
+            "$enabled" "$(json_escape "$host")" \
+            "$active" "$end_epoch"
+    done
+    printf ']'
+}
+
+# resync_blacklist_nft — flush + repopulate blacklist_macs from current UCI.
+resync_blacklist_nft() {
+    nft flush set inet fw4 blacklist_macs 2>/dev/null
+    macs=$(uci show gatekeeper.blacklist 2>/dev/null \
+        | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
+    for m in $macs; do
+        [ -z "$m" ] && continue
+        nft "add element inet fw4 blacklist_macs { $m }" 2>/dev/null
+    done
+}
+
+# ---- list method (rpcd discovery) ------------------------------------------
+
+case "$1" in
+list)
+    cat <<'EOF'
+{
+  "get_overview": {},
+  "list_active": {},
+  "list_denied": {},
+  "list_static": {},
+  "approve": { "mac": "string" },
+  "deny": { "mac": "string" },
+  "extend": { "mac": "string", "hours": "number" },
+  "revoke": { "mac": "string" },
+  "denied_extend": { "mac": "string" },
+  "denied_revoke_approve": { "mac": "string" },
+  "bl_get_mode": {},
+  "bl_set_mode": { "enabled": "boolean" },
+  "bl_list": {},
+  "bl_add": { "mac": "string" },
+  "bl_remove": { "mac": "string" },
+  "bl_clear": {},
+  "sched_list": { "mac": "string" },
+  "sched_show": { "name": "string" },
+  "sched_add": { "mac": "string", "days": "string", "start": "string", "stop": "string", "name": "string", "label": "string" },
+  "sched_remove": { "name": "string" },
+  "sched_set_enabled": { "name": "string", "enabled": "boolean" },
+  "enable": {},
+  "disable": {},
+  "sync": {},
+  "clear_logs": {},
+  "tail_log": { "lines": "number" },
+  "backup": { "nosecrets": "boolean" },
+  "restore_dryrun": { "content_b64": "string" },
+  "restore_apply": {},
+  "test_bot": {},
+  "settings_get": {},
+  "settings_set": { "token": "string", "chat_id": "string", "blacklist_mode": "boolean", "schedule_notify": "boolean", "disabled": "boolean" }
+}
+EOF
+    exit 0
+    ;;
+call)
+    METHOD="$2"
+    INPUT=$(read_input)
+    trap 'rm -f "$INPUT" /tmp/gk-rpc-restore-pending-*' EXIT
+    ;;
+*)
+    json_err "rpcd plugin invoked without a method"
+    exit 1
+    ;;
+esac
+
+# ---- method dispatch -------------------------------------------------------
+
+case "$METHOD" in
+
+    # --- Overview --------------------------------------------------------
+    get_overview)
+        disabled=$(uci -q get gatekeeper.main.disabled || echo 0)
+        bl_mode=$(uci -q get gatekeeper.main.blacklist_mode || echo 0)
+        sched_notify=$(uci -q get gatekeeper.main.schedule_notify || echo 0)
+        # Counts
+        n_active=$(nft list set inet fw4 approved_macs 2>/dev/null | grep -c "expires")
+        n_denied=$(nft list set inet fw4 denied_macs 2>/dev/null | grep -c "expires")
+        n_static=$(nft list set inet fw4 static_macs 2>/dev/null | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}" | wc -l)
+        n_blacklist=$(uci show gatekeeper.blacklist 2>/dev/null | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}" | wc -l)
+        n_schedules=$(uci show gatekeeper 2>/dev/null | grep -c '=schedule$')
+        n_active_schedules=0
+        [ -f /tmp/sched_active ] && n_active_schedules=$(wc -l < /tmp/sched_active 2>/dev/null || echo 0)
+        # Bot status
+        bot_running=false
+        if pgrep -f tg_bot.sh >/dev/null 2>&1; then bot_running=true; fi
+        # Firewall chain status
+        chain_active=false
+        if nft list chain inet fw4 gatekeeper_forward 2>/dev/null | grep -q "drop\|accept"; then
+            chain_active=true
+        fi
+        # NTP / clock sanity
+        clock_synced=false
+        [ "$(date +%Y)" -ge 2024 ] && clock_synced=true
+        printf '{"disabled":%s,"blacklist_mode":%s,"schedule_notify":%s,"counts":{"active":%s,"denied":%s,"static":%s,"blacklist":%s,"schedules":%s,"active_schedules":%s},"bot_running":%s,"firewall_active":%s,"clock_synced":%s,"hostname":%s,"now_epoch":%s}\n' \
+            "$([ "$disabled" = "1" ] && echo true || echo false)" \
+            "$([ "$bl_mode" = "1" ] && echo true || echo false)" \
+            "$([ "$sched_notify" = "1" ] && echo true || echo false)" \
+            "$n_active" "$n_denied" "$n_static" "$n_blacklist" "$n_schedules" "$n_active_schedules" \
+            "$bot_running" "$chain_active" "$clock_synced" \
+            "$(json_escape "$(uci -q get system.@system[0].hostname || cat /proc/sys/kernel/hostname 2>/dev/null || echo openwrt)")" \
+            "$(date +%s)"
+        ;;
+
+    # --- Device listings -------------------------------------------------
+    list_active)
+        printf '{"devices":'
+        nft_set_macs_with_timeout approved_macs
+        printf '}\n'
+        ;;
+    list_denied)
+        printf '{"devices":'
+        nft_set_macs_with_timeout denied_macs
+        printf '}\n'
+        ;;
+    list_static)
+        printf '{"devices":'
+        nft_set_macs_no_timeout static_macs
+        printf '}\n'
+        ;;
+
+    # --- Device actions --------------------------------------------------
+    approve)
+        mac=$(normalize_mac "$(field "$INPUT" .mac)")
+        [ -z "$mac" ] && { json_err "invalid mac"; exit 0; }
+        nft "delete element inet fw4 approved_macs { $mac }" 2>/dev/null
+        nft "add element inet fw4 approved_macs { $mac timeout 30m }" 2>/dev/null
+        echo "$(date '+%Y-%m-%dT%H:%M:%S') $mac - - approved-luci" >> "$LOG_FILE"
+        logger -t gatekeeper-luci "Approved via LuCI: $mac"
+        json_ok
+        ;;
+    deny)
+        mac=$(normalize_mac "$(field "$INPUT" .mac)")
+        [ -z "$mac" ] && { json_err "invalid mac"; exit 0; }
+        nft "delete element inet fw4 approved_macs { $mac }" 2>/dev/null
+        nft "delete element inet fw4 denied_macs { $mac }" 2>/dev/null
+        nft "add element inet fw4 denied_macs { $mac timeout 30m }" 2>/dev/null
+        echo "$(date '+%Y-%m-%dT%H:%M:%S') $mac - - denied-luci" >> "$LOG_FILE"
+        logger -t gatekeeper-luci "Denied via LuCI: $mac"
+        json_ok
+        ;;
+    extend)
+        mac=$(normalize_mac "$(field "$INPUT" .mac)")
+        hours=$(field_raw "$INPUT" '.hours // 0')
+        [ -z "$mac" ] && { json_err "invalid mac"; exit 0; }
+        # Determine extension seconds (default 30 min if hours missing/zero)
+        case "$hours" in
+            ''|0|null) ext=1800; label="+30m" ;;
+            *)
+                if echo "$hours" | grep -qE '^[0-9]+$'; then
+                    ext=$((hours * 3600))
+                    label="+${hours}h"
+                else
+                    ext=1800; label="+30m"
+                fi
+                ;;
+        esac
+        line=$(nft list set inet fw4 approved_macs 2>/dev/null | grep "$mac" | grep "expires")
+        if [ -z "$line" ]; then
+            json_err "device not in approved set"
+            exit 0
+        fi
+        timestr=$(echo "$line" | sed 's/.*expires //; s/s.*/s/; s/,//g')
+        cur=$(parse_remaining_secs "$timestr")
+        new=$((cur + ext))
+        nft "delete element inet fw4 approved_macs { $mac }" 2>/dev/null
+        nft "add element inet fw4 approved_macs { $mac timeout ${new}s }" 2>/dev/null
+        echo "$(date '+%Y-%m-%dT%H:%M:%S') $mac - - extended-luci-${label}" >> "$LOG_FILE"
+        printf '{"ok":true,"new_seconds":%s,"label":%s}\n' "$new" "$(json_escape "$label")"
+        ;;
+    revoke)
+        mac=$(normalize_mac "$(field "$INPUT" .mac)")
+        [ -z "$mac" ] && { json_err "invalid mac"; exit 0; }
+        nft "delete element inet fw4 approved_macs { $mac }" 2>/dev/null
+        nft "add element inet fw4 denied_macs { $mac timeout 30m }" 2>/dev/null
+        echo "$(date '+%Y-%m-%dT%H:%M:%S') $mac - - revoked-luci" >> "$LOG_FILE"
+        json_ok
+        ;;
+    denied_extend)
+        mac=$(normalize_mac "$(field "$INPUT" .mac)")
+        [ -z "$mac" ] && { json_err "invalid mac"; exit 0; }
+        line=$(nft list set inet fw4 denied_macs 2>/dev/null | grep "$mac" | grep "expires")
+        [ -z "$line" ] && { json_err "device not in denied set"; exit 0; }
+        timestr=$(echo "$line" | sed 's/.*expires //; s/s.*/s/; s/,//g')
+        cur=$(parse_remaining_secs "$timestr")
+        new=$((cur + 1800))
+        nft "delete element inet fw4 denied_macs { $mac }" 2>/dev/null
+        nft "add element inet fw4 denied_macs { $mac timeout ${new}s }" 2>/dev/null
+        echo "$(date '+%Y-%m-%dT%H:%M:%S') $mac - - denial-extended-luci-+30m" >> "$LOG_FILE"
+        printf '{"ok":true,"new_seconds":%s}\n' "$new"
+        ;;
+    denied_revoke_approve)
+        mac=$(normalize_mac "$(field "$INPUT" .mac)")
+        [ -z "$mac" ] && { json_err "invalid mac"; exit 0; }
+        nft "delete element inet fw4 denied_macs { $mac }" 2>/dev/null
+        nft "add element inet fw4 approved_macs { $mac timeout 30m }" 2>/dev/null
+        echo "$(date '+%Y-%m-%dT%H:%M:%S') $mac - - denial-revoked-approved-luci-30m" >> "$LOG_FILE"
+        json_ok
+        ;;
+
+    # --- Blacklist mgmt --------------------------------------------------
+    bl_get_mode)
+        m=$(uci -q get gatekeeper.main.blacklist_mode || echo 0)
+        printf '{"enabled":%s}\n' "$([ "$m" = "1" ] && echo true || echo false)"
+        ;;
+    bl_set_mode)
+        e=$(field_raw "$INPUT" .enabled)
+        if [ "$e" = "true" ]; then
+            uci set gatekeeper.main.blacklist_mode=1
+        else
+            uci set gatekeeper.main.blacklist_mode=0
+        fi
+        if uci commit gatekeeper; then
+            resync_blacklist_nft
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - blacklist-mode-luci-${e}" >> "$LOG_FILE"
+            json_ok
+        else
+            uci revert gatekeeper 2>/dev/null
+            json_err "uci commit failed"
+        fi
+        ;;
+    bl_list)
+        printf '{"macs":'
+        uci_blacklist_macs
+        printf '}\n'
+        ;;
+    bl_add)
+        mac=$(normalize_mac "$(field "$INPUT" .mac)")
+        [ -z "$mac" ] && { json_err "invalid mac"; exit 0; }
+        existing=$(uci show gatekeeper.blacklist 2>/dev/null \
+            | grep -oE "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}" | tr 'A-Z' 'a-z')
+        if echo "$existing" | grep -qx "$mac"; then
+            printf '{"ok":true,"already_present":true,"mac":%s}\n' "$(json_escape "$mac")"
+            exit 0
+        fi
+        if ! uci -q get gatekeeper.blacklist >/dev/null 2>&1; then
+            uci set gatekeeper.blacklist=blacklist
+        fi
+        uci add_list gatekeeper.blacklist.mac="$mac"
+        if uci commit gatekeeper; then
+            nft "add element inet fw4 blacklist_macs { $mac }" 2>/dev/null
+            nft "delete element inet fw4 approved_macs { $mac }" 2>/dev/null
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') $mac - - bl-added-luci" >> "$LOG_FILE"
+            printf '{"ok":true,"mac":%s}\n' "$(json_escape "$mac")"
+        else
+            uci revert gatekeeper 2>/dev/null
+            json_err "uci commit failed"
+        fi
+        ;;
+    bl_remove)
+        mac=$(normalize_mac "$(field "$INPUT" .mac)")
+        [ -z "$mac" ] && { json_err "invalid mac"; exit 0; }
+        uci del_list gatekeeper.blacklist.mac="$mac" 2>/dev/null
+        if uci commit gatekeeper; then
+            nft "delete element inet fw4 blacklist_macs { $mac }" 2>/dev/null
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') $mac - - bl-removed-luci" >> "$LOG_FILE"
+            json_ok
+        else
+            uci revert gatekeeper 2>/dev/null
+            json_err "uci commit failed"
+        fi
+        ;;
+    bl_clear)
+        uci delete gatekeeper.blacklist 2>/dev/null
+        uci set gatekeeper.blacklist=blacklist
+        if uci commit gatekeeper; then
+            nft flush set inet fw4 blacklist_macs 2>/dev/null
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - bl-cleared-luci" >> "$LOG_FILE"
+            json_ok
+        else
+            uci revert gatekeeper 2>/dev/null
+            json_err "uci commit failed"
+        fi
+        ;;
+
+    # --- Schedule mgmt ---------------------------------------------------
+    sched_list)
+        filter=$(field "$INPUT" .mac)
+        if [ -n "$filter" ]; then
+            filter=$(echo "$filter" | tr 'A-Z' 'a-z')
+            printf '{"schedules":'
+            # Filter: emit only schedules where mac matches.
+            uci_schedules | jq --arg m "$filter" '[.[] | select(.mac == $m)]'
+            printf '}\n'
+        else
+            printf '{"schedules":'
+            uci_schedules
+            printf '}\n'
+        fi
+        ;;
+    sched_show)
+        name=$(field "$INPUT" .name | tr 'A-Z' 'a-z')
+        [ -z "$name" ] && { json_err "name required"; exit 0; }
+        if [ "$(uci -q get "gatekeeper.${name}")" != "schedule" ]; then
+            json_err "no schedule with that name"
+            exit 0
+        fi
+        # Fetch the single schedule via the same builder, then jq-filter.
+        printf '{"schedule":'
+        uci_schedules | jq --arg n "$name" '.[] | select(.name == $n)'
+        printf '}\n'
+        ;;
+    sched_add)
+        mac=$(normalize_mac "$(field "$INPUT" .mac)")
+        days=$(field "$INPUT" .days | tr 'A-Z' 'a-z')
+        start=$(field "$INPUT" .start)
+        stop=$(field "$INPUT" .stop)
+        name=$(field "$INPUT" .name | tr 'A-Z' 'a-z')
+        label=$(field "$INPUT" .label)
+        [ -z "$mac" ] && { json_err "invalid mac"; exit 0; }
+        # Validate days
+        case "$days" in
+            daily|weekdays|weekends) ;;
+            *)
+                if ! echo "$days" | grep -qE '^(mon|tue|wed|thu|fri|sat|sun)(,(mon|tue|wed|thu|fri|sat|sun))*$'; then
+                    json_err "invalid days"
+                    exit 0
+                fi
+                ;;
+        esac
+        # Validate window
+        if ! echo "${start}-${stop}" | grep -qE '^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]-(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$'; then
+            json_err "invalid window (HH:MM-HH:MM, 24h, hours <= 23)"
+            exit 0
+        fi
+        [ "$start" = "$stop" ] && { json_err "start and stop must differ"; exit 0; }
+        # Resolve / validate name
+        if [ -z "$name" ]; then
+            suffix=$(echo "$mac" | tr -d ':' | cut -c7-12)
+            n=1
+            while uci -q get "gatekeeper.sched_${suffix}_${n}" >/dev/null 2>&1; do
+                n=$((n+1))
+            done
+            name="sched_${suffix}_${n}"
+        else
+            if ! echo "$name" | grep -qE '^[a-z0-9_]{1,32}$'; then
+                json_err "invalid name (1-32 chars of [a-z0-9_])"
+                exit 0
+            fi
+            if uci -q get "gatekeeper.${name}" >/dev/null 2>&1; then
+                json_err "name already exists"
+                exit 0
+            fi
+        fi
+        uci set "gatekeeper.${name}=schedule"
+        uci set "gatekeeper.${name}.mac=${mac}"
+        uci set "gatekeeper.${name}.days=${days}"
+        uci set "gatekeeper.${name}.start=${start}"
+        uci set "gatekeeper.${name}.stop=${stop}"
+        uci set "gatekeeper.${name}.enabled=1"
+        [ -n "$label" ] && uci set "gatekeeper.${name}.label=${label}"
+        if uci commit gatekeeper; then
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') $mac - - sched-added-luci-${name}" >> "$LOG_FILE"
+            printf '{"ok":true,"name":%s}\n' "$(json_escape "$name")"
+        else
+            uci revert gatekeeper 2>/dev/null
+            json_err "uci commit failed"
+        fi
+        ;;
+    sched_remove)
+        name=$(field "$INPUT" .name | tr 'A-Z' 'a-z')
+        [ -z "$name" ] && { json_err "name required"; exit 0; }
+        if [ "$(uci -q get "gatekeeper.${name}")" != "schedule" ]; then
+            json_err "no schedule with that name"
+            exit 0
+        fi
+        sched_mac=$(uci -q get "gatekeeper.${name}.mac")
+        # If currently active, drop the MAC from approved_macs immediately.
+        if [ -n "$sched_mac" ] && [ -f /tmp/sched_active ] \
+           && grep -q "^${name} " /tmp/sched_active 2>/dev/null; then
+            nft "delete element inet fw4 approved_macs { $sched_mac }" 2>/dev/null
+        fi
+        uci delete "gatekeeper.${name}" 2>/dev/null
+        if uci commit gatekeeper; then
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') ${sched_mac:--} - - sched-removed-luci-${name}" >> "$LOG_FILE"
+            json_ok
+        else
+            uci revert gatekeeper 2>/dev/null
+            json_err "uci commit failed"
+        fi
+        ;;
+    sched_set_enabled)
+        name=$(field "$INPUT" .name | tr 'A-Z' 'a-z')
+        en=$(field_raw "$INPUT" .enabled)
+        [ -z "$name" ] && { json_err "name required"; exit 0; }
+        if [ "$(uci -q get "gatekeeper.${name}")" != "schedule" ]; then
+            json_err "no schedule with that name"
+            exit 0
+        fi
+        if [ "$en" = "true" ]; then
+            uci set "gatekeeper.${name}.enabled=1"
+            label="enabled"
+        else
+            uci set "gatekeeper.${name}.enabled=0"
+            label="paused"
+        fi
+        if uci commit gatekeeper; then
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - sched-${label}-luci-${name}" >> "$LOG_FILE"
+            json_ok
+        else
+            uci revert gatekeeper 2>/dev/null
+            json_err "uci commit failed"
+        fi
+        ;;
+
+    # --- System ----------------------------------------------------------
+    enable)
+        uci set gatekeeper.main.disabled=0
+        if uci commit gatekeeper; then
+            rm -f /tmp/dns_locks/* 2>/dev/null
+            fw4 reload >/dev/null 2>&1
+            # Re-sync static + blacklist MACs (mirrors ENABLE bot command)
+            nft flush set inet fw4 static_macs 2>/dev/null
+            i=0; while sm=$(uci -q get dhcp.@host[$i].mac); do
+                for x in $sm; do nft "add element inet fw4 static_macs { $x }" 2>/dev/null; done
+                i=$((i+1))
+            done
+            resync_blacklist_nft
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - gatekeeper-enabled-luci" >> "$LOG_FILE"
+            json_ok
+        else
+            uci revert gatekeeper 2>/dev/null
+            json_err "uci commit failed"
+        fi
+        ;;
+    disable)
+        uci set gatekeeper.main.disabled=1
+        if uci commit gatekeeper; then
+            nft flush chain inet fw4 gatekeeper_forward 2>/dev/null
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - gatekeeper-disabled-luci" >> "$LOG_FILE"
+            json_ok
+        else
+            uci revert gatekeeper 2>/dev/null
+            json_err "uci commit failed"
+        fi
+        ;;
+    sync)
+        if [ -x /usr/bin/gatekeeper_sync.sh ]; then
+            /usr/bin/gatekeeper_sync.sh all >/dev/null 2>&1
+            json_ok
+        else
+            json_err "gatekeeper_sync.sh not found"
+        fi
+        ;;
+    clear_logs)
+        : > "$LOG_FILE"
+        : > "$NAME_MAP"
+        json_ok
+        ;;
+    tail_log)
+        n=$(field_raw "$INPUT" '.lines // 50')
+        case "$n" in *[!0-9]*) n=50 ;; esac
+        [ "$n" -lt 1 ] && n=50
+        [ "$n" -gt 1000 ] && n=1000
+        if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
+            content=$(tail -n "$n" "$LOG_FILE")
+            printf '{"lines":%s}\n' "$(json_escape "$content")"
+        else
+            printf '{"lines":""}\n'
+        fi
+        ;;
+
+    # --- Backup / Restore -----------------------------------------------
+    backup)
+        nosecrets=$(field_raw "$INPUT" '.nosecrets // false')
+        bk_host=$(uci -q get system.@system[0].hostname \
+                  || cat /proc/sys/kernel/hostname 2>/dev/null \
+                  || echo openwrt)
+        # Build backup body to a temp file, then base64-encode it for transport.
+        bf=$(mktemp -t gk-backup.XXXXXX)
+        secrets_label=yes
+        [ "$nosecrets" = "true" ] && secrets_label=no
+        {
+            echo "# Gatekeeper backup"
+            echo "# Generated:        $(date -Iseconds 2>/dev/null || date)"
+            echo "# Hostname:         $bk_host"
+            echo "# Schema:           v1"
+            echo "# Includes secrets: $secrets_label"
+            echo "# Source files:"
+            echo "#   /etc/config/gatekeeper"
+            echo "#   /etc/config/dhcp (host entries only)"
+            echo ""
+            echo "# === /etc/config/gatekeeper ==="
+            if [ "$nosecrets" = "true" ]; then
+                uci export gatekeeper | sed -E "s/^([[:space:]]*option (token|chat_id) ).*/\1''/"
+            else
+                uci export gatekeeper
+            fi
+            echo ""
+            echo "# === /etc/config/dhcp (host entries only) ==="
+            awk '/^config[[:space:]]/ { in_host = ($2 == "host") } in_host { print }' \
+                /etc/config/dhcp 2>/dev/null
+        } > "$bf"
+        # Filename suggestion + content + size.
+        fname="gatekeeper-backup-${bk_host}-$(date +%Y%m%d-%H%M)-$$.txt"
+        sz=$(wc -c < "$bf")
+        b64=$(base64 < "$bf" | tr -d '\n')
+        rm -f "$bf"
+        echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - backup-luci-${secrets_label}" >> "$LOG_FILE"
+        printf '{"ok":true,"filename":%s,"size":%s,"includes_secrets":%s,"content_b64":%s}\n' \
+            "$(json_escape "$fname")" "$sz" \
+            "$([ "$nosecrets" = "true" ] && echo false || echo true)" \
+            "$(json_escape "$b64")"
+        ;;
+    restore_dryrun)
+        b64=$(field "$INPUT" .content_b64)
+        [ -z "$b64" ] && { json_err "content_b64 required"; exit 0; }
+        # Decode into the canonical RESTORE_FILE path.
+        rm -f "$RESTORE_FILE" "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW"
+        echo "$b64" | base64 -d > "$RESTORE_FILE" 2>/dev/null
+        if ! is_valid_backup "$RESTORE_FILE"; then
+            rm -f "$RESTORE_FILE"
+            json_err "file failed validation gate"
+            exit 0
+        fi
+        restore_parse_to_records "$RESTORE_FILE" "$RESTORE_RECORDS"
+        if ! restore_build_plan "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW"; then
+            # No-op restore.
+            rm -f "$RESTORE_FILE" "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW"
+            printf '{"ok":true,"noop":true,"preview":"All entries from this backup are already present."}\n'
+            exit 0
+        fi
+        # Count what would change.
+        n_main=$(grep -c '^uci set gatekeeper\.main\.' "$RESTORE_PLAN")
+        n_bl=$(grep -c '^uci add_list gatekeeper\.blacklist\.mac=' "$RESTORE_PLAN")
+        n_sched=$(grep -cE '^uci set gatekeeper\.[^.]+=schedule$' "$RESTORE_PLAN")
+        n_total=$((n_main + n_bl + n_sched))
+        preview_text=$(cat "$RESTORE_PREVIEW")
+        printf '{"ok":true,"noop":false,"preview":%s,"counts":{"main":%s,"blacklist":%s,"schedules":%s,"total":%s}}\n' \
+            "$(json_escape "$preview_text")" \
+            "$n_main" "$n_bl" "$n_sched" "$n_total"
+        ;;
+    restore_apply)
+        if [ ! -s "$RESTORE_PLAN" ]; then
+            json_err "no pending restore; call restore_dryrun first"
+            exit 0
+        fi
+        failed=""
+        while IFS= read -r line; do
+            case "$line" in ''|\#*) continue ;; esac
+            if ! eval "$line"; then
+                failed="$line"
+                break
+            fi
+        done < "$RESTORE_PLAN"
+        if [ -n "$failed" ]; then
+            uci revert gatekeeper 2>/dev/null
+            rm -f "$RESTORE_FILE" "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW"
+            printf '{"error":%s}\n' "$(json_escape "apply failed at: $failed")"
+            exit 0
+        fi
+        if ! uci commit gatekeeper; then
+            uci revert gatekeeper 2>/dev/null
+            rm -f "$RESTORE_FILE" "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW"
+            json_err "uci commit failed"
+            exit 0
+        fi
+        # Post-apply hooks.
+        resync_blacklist_nft
+        # Trigger scheduler_tick by SIGUSR1? No — instead the bot's main loop
+        # picks it up within ~30s. For instant feedback, we can't reach into
+        # tg_bot.sh. The schedules will activate on the next tick.
+        n_main=$(grep -c '^uci set gatekeeper\.main\.' "$RESTORE_PLAN")
+        n_bl=$(grep -c '^uci add_list gatekeeper\.blacklist\.mac=' "$RESTORE_PLAN")
+        n_sched=$(grep -cE '^uci set gatekeeper\.[^.]+=schedule$' "$RESTORE_PLAN")
+        n_total=$((n_main + n_bl + n_sched))
+        echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - restore-applied-luci-${n_total}" >> "$LOG_FILE"
+        rm -f "$RESTORE_FILE" "$RESTORE_RECORDS" "$RESTORE_PLAN" "$RESTORE_PREVIEW"
+        printf '{"ok":true,"applied":{"main":%s,"blacklist":%s,"schedules":%s,"total":%s}}\n' \
+            "$n_main" "$n_bl" "$n_sched" "$n_total"
+        ;;
+
+    # --- Settings ---------------------------------------------------------
+    settings_get)
+        token=$(uci -q get gatekeeper.main.token)
+        chat_id=$(uci -q get gatekeeper.main.chat_id)
+        bl_mode=$(uci -q get gatekeeper.main.blacklist_mode || echo 0)
+        sched_notify=$(uci -q get gatekeeper.main.schedule_notify || echo 0)
+        disabled=$(uci -q get gatekeeper.main.disabled || echo 0)
+        # Mask the token: show last 4 chars only.
+        token_masked=""
+        if [ -n "$token" ]; then
+            token_tail=$(echo "$token" | awk '{print substr($0, length($0)-3, 4)}')
+            token_masked="****${token_tail}"
+        fi
+        printf '{"token":%s,"token_masked":%s,"chat_id":%s,"blacklist_mode":%s,"schedule_notify":%s,"disabled":%s}\n' \
+            "$(json_escape "$token")" \
+            "$(json_escape "$token_masked")" \
+            "$(json_escape "$chat_id")" \
+            "$([ "$bl_mode" = "1" ] && echo true || echo false)" \
+            "$([ "$sched_notify" = "1" ] && echo true || echo false)" \
+            "$([ "$disabled" = "1" ] && echo true || echo false)"
+        ;;
+    settings_set)
+        token=$(field "$INPUT" .token)
+        chat_id=$(field "$INPUT" .chat_id)
+        bl_mode=$(field_raw "$INPUT" .blacklist_mode)
+        sched_notify=$(field_raw "$INPUT" .schedule_notify)
+        disabled=$(field_raw "$INPUT" .disabled)
+        # Only update fields that were supplied (non-empty / non-null).
+        [ -n "$token" ] && [ "$token" != "null" ] && uci set gatekeeper.main.token="$token"
+        [ -n "$chat_id" ] && [ "$chat_id" != "null" ] && uci set gatekeeper.main.chat_id="$chat_id"
+        case "$bl_mode" in true) uci set gatekeeper.main.blacklist_mode=1 ;; false) uci set gatekeeper.main.blacklist_mode=0 ;; esac
+        case "$sched_notify" in true) uci set gatekeeper.main.schedule_notify=1 ;; false) uci set gatekeeper.main.schedule_notify=0 ;; esac
+        case "$disabled" in
+            true)  uci set gatekeeper.main.disabled=1 ;;
+            false) uci set gatekeeper.main.disabled=0 ;;
+        esac
+        if uci commit gatekeeper; then
+            # If token / chat_id changed, the bot needs a restart to pick them up.
+            need_restart=false
+            if [ -n "$token" ] && [ "$token" != "null" ]; then need_restart=true; fi
+            if [ -n "$chat_id" ] && [ "$chat_id" != "null" ]; then need_restart=true; fi
+            if [ "$need_restart" = "true" ] && [ -x /etc/init.d/tg_gatekeeper ]; then
+                /etc/init.d/tg_gatekeeper restart >/dev/null 2>&1 &
+            fi
+            # If disabled changed, also act on the firewall.
+            case "$disabled" in
+                true)  nft flush chain inet fw4 gatekeeper_forward 2>/dev/null ;;
+                false) fw4 reload >/dev/null 2>&1 ;;
+            esac
+            # If blacklist_mode changed, resync the nft set defensively.
+            case "$bl_mode" in true|false) resync_blacklist_nft ;; esac
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - settings-updated-luci" >> "$LOG_FILE"
+            printf '{"ok":true,"bot_restart":%s}\n' "$need_restart"
+        else
+            uci revert gatekeeper 2>/dev/null
+            json_err "uci commit failed"
+        fi
+        ;;
+
+    # --- Diagnostics ------------------------------------------------------
+    test_bot)
+        token=$(uci -q get gatekeeper.main.token)
+        if [ -z "$token" ]; then
+            json_err "no token configured"
+            exit 0
+        fi
+        resp=$(curl -s --connect-timeout 10 --max-time 15 \
+            "https://api.telegram.org/bot${token}/getMe")
+        ok=$(echo "$resp" | jq -r '.ok // false')
+        if [ "$ok" = "true" ]; then
+            uname=$(echo "$resp" | jq -r '.result.username // empty')
+            fname=$(echo "$resp" | jq -r '.result.first_name // empty')
+            printf '{"ok":true,"username":%s,"first_name":%s}\n' \
+                "$(json_escape "$uname")" \
+                "$(json_escape "$fname")"
+        else
+            err=$(echo "$resp" | jq -r '.description // "unknown"')
+            printf '{"error":%s}\n' "$(json_escape "$err")"
+        fi
+        ;;
+
+    *)
+        json_err "unknown method: $METHOD"
+        ;;
+esac
