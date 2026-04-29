@@ -27,14 +27,16 @@ jobs:
         echo "PKG_VERSION=${PKG_VERSION}" >> "$GITHUB_ENV"
         echo "PKG_RELEASE=${PKG_RELEASE}" >> "$GITHUB_ENV"
         echo "IPK_NAME=gatekeeper_${PKG_VERSION}-${PKG_RELEASE}_all.ipk" >> "$GITHUB_ENV"
+        echo "LUCI_IPK_NAME=luci-app-gatekeeper_${PKG_VERSION}-${PKG_RELEASE}_all.ipk" >> "$GITHUB_ENV"
 
-    - name: Build .ipk package
+    - name: Build gatekeeper .ipk package
       run: |
         set -e
         STAGING="$(mktemp -d)"
 
         # Create install tree
         mkdir -p "${STAGING}/data/usr/bin"
+        mkdir -p "${STAGING}/data/usr/lib/gatekeeper"
         mkdir -p "${STAGING}/data/etc/init.d"
         mkdir -p "${STAGING}/data/etc/config"
         mkdir -p "${STAGING}/data/etc/gatekeeper"
@@ -46,6 +48,9 @@ jobs:
         install -m 755 gatekeeper_trigger.sh   "${STAGING}/data/usr/bin/gatekeeper_trigger.sh"
         install -m 755 dnsmasq_trigger.sh      "${STAGING}/data/usr/bin/dnsmasq_trigger.sh"
         install -m 755 gatekeeper_sync.sh      "${STAGING}/data/usr/bin/gatekeeper_sync.sh"
+
+        # Sourced shared library → /usr/lib/gatekeeper
+        install -m 644 opkg/usr/lib/gatekeeper/restore_helpers.sh "${STAGING}/data/usr/lib/gatekeeper/restore_helpers.sh"
 
         # Firewall rules → /etc/gatekeeper
         install -m 644 gatekeeper.nft          "${STAGING}/data/etc/gatekeeper/gatekeeper.nft"
@@ -88,6 +93,56 @@ jobs:
 
         echo "Built: ${IPK_NAME}"
         ls -lh "${IPK_NAME}"
+
+    - name: Build luci-app-gatekeeper .ipk package
+      run: |
+        set -e
+        STAGING="$(mktemp -d)"
+
+        mkdir -p "${STAGING}/data/usr/libexec/rpcd"
+        mkdir -p "${STAGING}/data/usr/share/luci/menu.d"
+        mkdir -p "${STAGING}/data/usr/share/rpcd/acl.d"
+        mkdir -p "${STAGING}/data/www/luci-static/resources/view/gatekeeper"
+        mkdir -p "${STAGING}/control"
+
+        # rpcd backend (executable)
+        install -m 755 opkg/luci/usr/libexec/rpcd/gatekeeper "${STAGING}/data/usr/libexec/rpcd/gatekeeper"
+
+        # Menu manifest
+        install -m 644 opkg/luci/usr/share/luci/menu.d/luci-app-gatekeeper.json "${STAGING}/data/usr/share/luci/menu.d/luci-app-gatekeeper.json"
+
+        # ACL manifest
+        install -m 644 opkg/luci/usr/share/rpcd/acl.d/luci-app-gatekeeper.json "${STAGING}/data/usr/share/rpcd/acl.d/luci-app-gatekeeper.json"
+
+        # Frontend views
+        for v in opkg/luci/htdocs/luci-static/resources/view/gatekeeper/*.js; do
+          install -m 644 "$v" "${STAGING}/data/www/luci-static/resources/view/gatekeeper/$(basename "$v")"
+        done
+
+        INSTALLED_SIZE=$(du -sk "${STAGING}/data" | cut -f1)
+
+        cat > "${STAGING}/control/control" <<EOF
+        Package: luci-app-gatekeeper
+        Version: ${PKG_VERSION}-${PKG_RELEASE}
+        Depends: luci-base, gatekeeper, rpcd
+        Section: luci
+        Architecture: all
+        Installed-Size: ${INSTALLED_SIZE}
+        Maintainer: Naresh Mehta <naresh@naresh.se>
+        Description: LuCI web interface for Gatekeeper
+         Browser-based admin UI for the Gatekeeper network access control system.
+         Manages devices, blacklist, schedules, configuration, and backups via the
+         router's standard LuCI panel without requiring the Telegram bot.
+        EOF
+
+        (cd "${STAGING}/data"    && tar czf "${STAGING}/data.tar.gz"    .)
+        (cd "${STAGING}/control" && tar czf "${STAGING}/control.tar.gz" .)
+        printf '2.0\n' > "${STAGING}/debian-binary"
+
+        (cd "${STAGING}" && ar rcs "${GITHUB_WORKSPACE}/${LUCI_IPK_NAME}" debian-binary control.tar.gz data.tar.gz)
+
+        echo "Built: ${LUCI_IPK_NAME}"
+        ls -lh "${LUCI_IPK_NAME}"
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
