@@ -6,6 +6,28 @@
 ./deploy.sh 192.168.1.1
 ```
 
+## 🖥️ LuCI Web UI (optional)
+
+Install the sibling ipk to get a browser-based admin interface:
+
+```bash
+scp luci-app-gatekeeper_*.ipk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 "opkg install /tmp/luci-app-gatekeeper_*.ipk"
+```
+
+Then browse to `http://<router-ip>/cgi-bin/luci → Network → Services → Gatekeeper`. Six pages:
+
+| Page | Use it for |
+|------|------------|
+| Overview | Status cards, counts, live log tail |
+| Devices | Approve / deny / extend / revoke active + denied devices |
+| Blacklist | Toggle blacklist mode + edit MAC list |
+| Schedules | Create / pause / delete time-window auto-approvals |
+| Backup / Restore | Browser download / upload + preview-then-apply |
+| Settings | Edit token / chat_id / mode flags + Test bot connection |
+
+The LuCI app is independent of the Telegram bot — both can run, neither needs to.
+
 ## 📱 Most Used Telegram Commands
 
 | Command | What It Does |

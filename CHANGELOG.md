@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **LuCI Web UI (`luci-app-gatekeeper`)** - Major new feature. Browser-based admin interface as a sibling ipk to the runtime package. Independent of the Telegram bot — installs alongside, reads/writes the same UCI + nftables state, and works with the bot running, stopped, or never installed at all.
+  - Six pages under `Network → Services → Gatekeeper`: Overview, Devices, Blacklist, Schedules, Backup / Restore, Settings.
+  - **Overview**: status cards (bot daemon / firewall / NTP clock / mode flags), 5 count cards (active/denied/static/blacklist/schedules), live tail of `/tmp/gatekeeper.log`, optional auto-refresh every 5 s.
+  - **Devices**: separate tables for active (approved_macs), denied (denied_macs), and static (static_macs). Per-row Approve / Deny / +30m / +1h / +4h / Revoke buttons. ⏰ tag indicates schedule-driven approvals; hostname column resolves via the same chain the STATUS bot command uses.
+  - **Blacklist**: large slide-toggle for `blacklist_mode`, MAC list editor with online indicator (matched against `/tmp/dhcp.leases`), bulk Clear All.
+  - **Schedules**: table + modal CRUD with day-preset selector (Daily / Weekdays / Weekends / Custom), browser-native time pickers, hyphen-to-underscore name correction hints (UCI section names disallow hyphens), pause/resume toggle. Active windows show end-time inline.
+  - **Backup / Restore**: browser-native download (with secrets / NO secrets) and drag-and-drop file upload. Two-step preview-then-apply restore flow showing the same merge plan the Telegram RESTORE flow produces — additive merge, never overwrites token/chat_id, atomic apply with `uci revert` on any failure.
+  - **Settings**: form for token (masked + show toggle), chat_id, blacklist_mode, schedule_notify, disabled flag. "Test bot connection" button calls Telegram `getMe` and reports username/first-name. Sync MAC sets and Clear logs maintenance buttons.
+  - Backend is a single rpcd exec plugin at `/usr/libexec/rpcd/gatekeeper` exposing 28 ubus methods (POSIX `/bin/sh`, BusyBox-compatible). Frontend is 6 ES module `view/<page>.js` files in the modern client-side LuCI pattern.
+  - Auth is the router's existing admin password (LuCI's standard ACL); no separate credential store.
+
+- **Shared `restore_helpers.sh` library** (`/usr/lib/gatekeeper/restore_helpers.sh`) - Refactor that pulls `mac_hostname`, `is_valid_backup`, `restore_parse_to_records`, `restore_build_plan`, and the `RESTORE_*` state-file constants out of `tg_bot.sh` (~250 lines) into a shared sourceable library. Both `tg_bot.sh` and the new LuCI rpcd backend source it — single source of truth for the restore parser/merge engine. The schedule-helper trio remains intentionally three-copy-duplicated per its existing contract.
+
 ### Fixed
 - **BusyBox `tr` POSIX-character-class incompatibility** - Older BusyBox `tr` does not interpret `[:upper:]` / `[:lower:]` as POSIX character classes; it treats them as literal characters. Surfaced as `SCHEDADD … LivingRoomTV` being rejected with "Invalid name" because the input was never lowercased. Replaced all 21 occurrences in `tg_bot.sh` and `gatekeeper.sh` with the `tr 'A-Z' 'a-z'` ASCII-range form per the CLAUDE.md convention.
 - **SCHEDADD invalid-name error is now actionable** - Names with hyphens like `living-room-tv` previously hit a generic regex error with no clue why (UCI section names disallow hyphens). The error now detects the hyphen case specifically and suggests the underscore alternative (`living_room_tv`) so the user can copy-paste a working command.

@@ -95,6 +95,9 @@ Deploys scripts, firewall rules, and init scripts while preserving the existing 
 - `dnsmasq_trigger.sh` - DHCP event bridge
 - `gatekeeper_sync.sh` - Manual sync utility
 
+### Shared Library (`/usr/lib/gatekeeper/`)
+- `restore_helpers.sh` - Sourced by `tg_bot.sh` and (when installed) the LuCI rpcd backend; canonical home of `mac_hostname`, `is_valid_backup`, the BACKUP/RESTORE parser, and the merge engine
+
 ### Firewall Rules (`/etc/gatekeeper/`)
 - `gatekeeper.nft` - nftables rules and set definitions
 
@@ -105,6 +108,47 @@ Deploys scripts, firewall rules, and init scripts while preserving the existing 
 
 ### Configuration (`/etc/config/`)
 - `gatekeeper` - UCI configuration file
+
+---
+
+## LuCI Web UI install (optional)
+
+The runtime `gatekeeper` package handles only the bot + firewall. A separate sibling package, **`luci-app-gatekeeper`**, provides a complete browser-based admin interface that runs alongside (or instead of) the Telegram bot.
+
+### Install on the router
+
+```bash
+# Copy the LuCI ipk over (or download from a tagged GitHub release)
+scp luci-app-gatekeeper_1.0.0-1_all.ipk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 "opkg install /tmp/luci-app-gatekeeper_1.0.0-1_all.ipk"
+```
+
+Both `.ipk` files are produced by the project's GitHub Actions workflow on every push to `main` and on every tag. They're attached to GitHub Releases automatically.
+
+### Access
+
+```
+http://<router-ip>/cgi-bin/luci → Network → Services → Gatekeeper
+```
+
+Auth uses your router's standard LuCI admin credentials.
+
+### What gets installed
+
+| Path | Purpose |
+|------|---------|
+| `/usr/libexec/rpcd/gatekeeper` | rpcd ubus backend (POSIX shell) |
+| `/usr/share/luci/menu.d/luci-app-gatekeeper.json` | LuCI menu manifest |
+| `/usr/share/rpcd/acl.d/luci-app-gatekeeper.json` | RBAC ACL definitions |
+| `/www/luci-static/resources/view/gatekeeper/*.js` | 6 LuCI frontend views |
+
+### Removing
+
+```bash
+opkg remove luci-app-gatekeeper
+```
+
+The runtime gatekeeper package is unaffected — the bot keeps working.
 
 ---
 

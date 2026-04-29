@@ -145,6 +145,37 @@ uci commit firewall
 
 Send "**STATUS**" to your bot in Telegram. You should receive a status message with the current gatekeeper state.
 
+## 🖥️ LuCI Web UI (optional)
+
+Gatekeeper ships an optional companion package, **`luci-app-gatekeeper`**, that provides a full browser-based admin interface alongside the Telegram bot. The two surfaces are independent — both read/write the same UCI + nftables state — so you can run with the bot, the UI, neither, or both.
+
+### Install
+
+```bash
+opkg install luci-app-gatekeeper_<version>_all.ipk
+```
+
+The LuCI app depends on the runtime `gatekeeper` package, `luci-base`, and `rpcd`. After install, navigate in your router's LuCI panel to:
+
+```
+Network → Services → Gatekeeper
+```
+
+### What's there
+
+- **Overview** — status cards (bot daemon, firewall chain, NTP clock, mode flags), 5 count cards (active / denied / static / blacklist / schedules), live tail of `/tmp/gatekeeper.log`. Optional auto-refresh every 5 s.
+- **Devices** — three tables (active, denied, static) with per-row Approve / Deny / +30m / +1h / +4h / Revoke buttons. ⏰ tag marks schedule-driven approvals; hostnames resolved from the same chain `STATUS` uses.
+- **Blacklist** — slide toggle for `blacklist_mode`, MAC list editor with online indicators (matched against `/tmp/dhcp.leases`), bulk Clear All.
+- **Schedules** — table + modal CRUD with day-preset selector (Daily / Weekdays / Weekends / Custom), browser-native time pickers, hyphen-to-underscore name correction hints, Pause/Resume toggle, ⏰ tag for currently-active windows.
+- **Backup / Restore** — direct browser download (with-secrets / NO-secrets) and drag-and-drop file upload. Two-step preview-then-apply restore flow with the same merge plan the Telegram `RESTORE` flow produces.
+- **Settings** — form for bot token (masked + Show toggle), chat_id, blacklist_mode, schedule_notify, disabled flag. **"Test bot connection"** button calls Telegram `getMe` and shows username/first-name on success — useful for verifying credentials at first-time setup.
+
+### Architecture
+
+Browser ↔ uhttpd/LuCI RPC ↔ `rpcd` ↔ `/usr/libexec/rpcd/gatekeeper` (POSIX shell) ↔ `uci` / `nft` / `/tmp/*`
+
+Auth uses LuCI's standard ACL — anyone with router admin credentials can use the UI. The LuCI app does NOT use the bot's `CHAT_ID` for authorization.
+
 ## 📱 Telegram Commands
 
 ### Device Management
