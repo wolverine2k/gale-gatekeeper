@@ -110,12 +110,18 @@ window_active_now() {
     stop_m=$(hm_to_min "$stop")
     now_m=$(hm_to_min "$now_hm")
 
+    # BusyBox `date -d` does NOT accept "today HH:MM" / "tomorrow HH:MM"
+    # (only "hh:mm[:ss]", "YYYY-MM-DD hh:mm[:ss]", and "@epoch"). Use the
+    # full YYYY-MM-DD form so this works on both BusyBox and GNU date.
+    today_ymd=$(date +%Y-%m-%d)
+    today_stop_epoch=$(date -d "${today_ymd} ${stop}:00" +%s)
+
     if [ "$start_m" -lt "$stop_m" ]; then
         # Same-day window
         echo "$expanded" | tr ' ' '\n' | grep -qx "$today_dow" || return 0
         [ "$now_m" -ge "$start_m" ] || return 0
         [ "$now_m" -lt "$stop_m" ] || return 0
-        date -d "today $stop" +%s
+        echo "$today_stop_epoch"
     else
         # Cross-midnight: today $start -> tomorrow $stop
         # Derive yesterday from today_dow (no system clock dependency)
@@ -125,10 +131,10 @@ window_active_now() {
         ')
         if echo "$expanded" | tr ' ' '\n' | grep -qx "$today_dow" \
            && [ "$now_m" -ge "$start_m" ]; then
-            date -d "tomorrow $stop" +%s
+            echo $(( today_stop_epoch + 86400 ))
         elif echo "$expanded" | tr ' ' '\n' | grep -qx "$yesterday_dow" \
              && [ "$now_m" -lt "$stop_m" ]; then
-            date -d "today $stop" +%s
+            echo "$today_stop_epoch"
         fi
     fi
 }

@@ -275,6 +275,18 @@ Both `gatekeeper.sh` and `tg_bot.sh` self-rotate `/tmp/gatekeeper.log`: when the
 
 All scripts that run on the router (`gatekeeper.sh`, `tg_bot.sh`, `gatekeeper_trigger.sh`, `dnsmasq_trigger.sh`, `gatekeeper_sync.sh`, init scripts, `gatekeeper.nft`) must be POSIX `/bin/sh` compatible — OpenWrt ships BusyBox ash, not bash. **No bashisms**: avoid `[[ ]]`, `${var,,}` / `${var^^}`, arrays, `function` keyword, process substitution `<(...)`. Use `tr 'A-Z' 'a-z'` for case conversion (not `${var,,}`) — this pattern is already used throughout. `deploy.sh` is the one exception (runs on dev machine) and uses `#!/bin/bash` deliberately.
 
+**BusyBox `date` is NOT GNU `date`**: `date -d` on BusyBox accepts only a small set of formats. Per the BusyBox manpage:
+```
+hh:mm[:ss]
+[YYYY.]MM.DD-hh:mm[:ss]
+YYYY-MM-DD hh:mm[:ss]
+[[[[[YY]YY]MM]DD]hh]mm[.ss]
+'@SECONDS_SINCE_1970'
+```
+GNU relative-date strings like `date -d "today 23:59"`, `date -d "tomorrow 06:00"`, `date -d "yesterday"`, or `date -d "2 days ago"` are **silently rejected**: BusyBox prints `date: invalid date 'today 23:59'` to stderr and writes nothing to stdout. Callers that pipe the output (or capture with `$(...)`) get an empty string instead of an error and quietly produce wrong results. This is exactly what broke `window_active_now` — the schedule auto-approve gate (step 3.6 of `gatekeeper.sh`) silently no-op'd for every scheduled MAC, so notifications were sent inside the window even though the schedule was supposed to suppress them.
+
+**To compute "today at HH:MM" portably**, use `date -d "$(date +%Y-%m-%d) HH:MM:00" +%s` (the `YYYY-MM-DD hh:mm[:ss]` form is supported by BOTH BusyBox and GNU). For "tomorrow at HH:MM", compute today's epoch and add `86400`. For "@epoch → human", `date -d "@$epoch" '+%Y-%m-%d %H:%M'` works everywhere. The static-analysis suite (`tests/test_busybox_compat.sh`) blocks regressions — run it before committing any change to a router-side script.
+
 ## Configuration
 
 ```bash

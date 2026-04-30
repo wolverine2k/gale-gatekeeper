@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Scheduled auto-approve silently no-op'd on the router**. `window_active_now` (in `gatekeeper.sh`, `tg_bot.sh`, and the test helper) called `date -d "today $stop" +%s` / `date -d "tomorrow $stop" +%s` — GNU coreutils relative-date syntax that BusyBox `date` does NOT support. BusyBox printed `date: invalid date 'today 23:59'` to stderr and wrote nothing to stdout, so `check_active_schedule_for_mac` saw an empty `end_epoch`, skipped every schedule, and `gatekeeper.sh` step 3.6 fell through to the regular notification path. Effect: every scheduled MAC sent a Telegram approval request inside its window instead of being silently auto-approved. `scheduler_tick` in `tg_bot.sh` was equally broken, so `/tmp/sched_active` stayed empty and SCHEDLIST never showed the `⏰ active` tag. Fix: switched to `date -d "$(date +%Y-%m-%d) HH:MM:00" +%s` (the `YYYY-MM-DD hh:mm:ss` form is in BusyBox's documented `-d` grammar AND is GNU-compatible). Cross-midnight branch now uses `today_stop_epoch + 86400` instead of `date -d "tomorrow $stop"`. All 28 schedule-helper unit tests still pass. Both `gatekeeper.sh` and `tg_bot.sh` must be redeployed for the fix to take effect.
+
+### Added
+- **`tests/test_busybox_compat.sh`** - Static-analysis test that scans every router-side script for known BusyBox-incompatible patterns (GNU `date -d "today/tomorrow/..."`, `[[ ]]`, `${var,,}` / `${var^^}`, process substitution `<(...)`, `function` keyword, bash arrays, `grep -P`, and the `#!/bin/bash` shebang). Run before every commit that touches a router-side script. Each match cites the file, line, exact content, and a one-line "why" explaining the BusyBox limitation. Catches the exact class of regression that shipped the broken `date -d "today $stop"` call — would have failed CI/local before merge.
+
 ### Added
 - **LuCI Web UI (`luci-app-gatekeeper`)** - Major new feature. Browser-based admin interface as a sibling ipk to the runtime package. Independent of the Telegram bot — installs alongside, reads/writes the same UCI + nftables state, and works with the bot running, stopped, or never installed at all.
   - Six pages under `Services → Gatekeeper`: Overview, Devices, Blacklist, Schedules, Backup / Restore, Settings.
