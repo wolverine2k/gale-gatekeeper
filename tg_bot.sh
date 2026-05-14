@@ -57,6 +57,7 @@
 # - ENABLE: Re-enable gatekeeper (clear bypass switch)
 # - DISABLE: Emergency disable gatekeeper (activate global bypass)
 # - CLEAR: Clear activity logs and hostname cache
+# - REBOOT: Prompt for reply-based router reboot confirmation
 #
 # Callback Handlers:
 # - approve_[MAC]: Add device to approved_macs set (30 minute timeout)
@@ -135,6 +136,9 @@ NAME_MAP="/tmp/mac_names"             # Custom hostname cache (MAC=Name pairs)
 MAP_FILE="/tmp/mac_map"               # Temporary device ID-to-MAC mapping for STATUS
 DENIED_MAP_FILE="/tmp/denied_mac_map" # Temporary device ID-to-MAC mapping for DSTATUS
 OFFSET_FILE="/tmp/tg_offset"          # Telegram update ID tracking
+REBOOT_PENDING="${GATEKEEPER_REBOOT_PENDING:-/tmp/gatekeeper_reboot_pending}"
+REBOOT_CONFIRM_TTL="${GATEKEEPER_REBOOT_CONFIRM_TTL:-120}"
+REBOOT_CMD="${GATEKEEPER_REBOOT_CMD:-/sbin/reboot}"
 
 # Convert an nftables remaining-time string (e.g. "29m59s", "1h2m3s",
 # "1d23h59m59s", "59s") to total seconds on stdout. Always called via
@@ -454,6 +458,7 @@ while true; do
             MSG="${MSG}*Maintenance:*\n"
             MSG="${MSG}\`LOG\` - View recent activity logs\n"
             MSG="${MSG}\`CLEAR\` - Clear logs and name cache\n"
+            MSG="${MSG}\`REBOOT\` - Reboot router after \`REBOOT YES\` confirmation\n"
             MSG="${MSG}\`BACKUP [NOSECRETS]\` - Send config backup as a Telegram file\n"
             MSG="${MSG}\`RESTORE\` (reply to a backup file) - Restore config from a backup; \`YES\` to confirm\n"
             MSG="${MSG}\`HELP\` - Show this help message\n\n"
@@ -867,6 +872,77 @@ EOF
             > "$LOG_FILE"
             > "$NAME_MAP"
             curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=🗑️ Logs and name cache cleared."
+
+        # === REBOOT COMMAND ===
+        # Prompt for an explicit reply-based confirmation before rebooting the
+        # router. This mirrors RESTORE's pending-message gate so an accidental
+        # text command cannot reboot the device.
+        elif [ "$CMD" = "REBOOT" ]; then
+            ARG_UPPER=$(echo "$ARG" | tr 'a-z' 'A-Z')
+
+            if [ "$ARG_UPPER" = "YES" ]; then
+                if [ -z "$REPLY_TO_MSGID" ] || [ ! -f "$REBOOT_PENDING" ]; then
+                    MSG="❌ Reply \`REBOOT YES\` to a pending reboot prompt."
+                    curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                         -H "Content-Type: application/json" \
+                         -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                    continue
+                fi
+
+                STORED_MSGID=$(awk '{print $1}' "$REBOOT_PENDING")
+                STORED_EPOCH=$(awk '{print $2}' "$REBOOT_PENDING")
+                if [ "$REPLY_TO_MSGID" != "$STORED_MSGID" ]; then
+                    MSG="❌ Confirmation must reply to the pending reboot prompt."
+                    curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                         -H "Content-Type: application/json" \
+                         -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                    continue
+                fi
+
+                NOW_EPOCH=$(date +%s)
+                case "$STORED_EPOCH" in ''|*[!0-9]*) STORED_EPOCH=0 ;; esac
+                case "$REBOOT_CONFIRM_TTL" in ''|*[!0-9]*) REBOOT_CONFIRM_TTL=120 ;; esac
+                if [ $((NOW_EPOCH - STORED_EPOCH)) -gt "$REBOOT_CONFIRM_TTL" ]; then
+                    MSG="⌛ Pending reboot expired (>2 minutes). Send \`REBOOT\` again."
+                    curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                         -H "Content-Type: application/json" \
+                         -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                    rm -f "$REBOOT_PENDING"
+                    continue
+                fi
+
+                if [ ! -x "$REBOOT_CMD" ]; then
+                    MSG="❌ Reboot command not executable: \`$REBOOT_CMD\`"
+                    curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                         -H "Content-Type: application/json" \
+                         -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                    rm -f "$REBOOT_PENDING"
+                    continue
+                fi
+
+                rm -f "$REBOOT_PENDING"
+                echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - router-reboot-requested" >> "$LOG_FILE"
+                logger -t tg_bot "Router reboot requested via Telegram"
+                MSG="🔄 Rebooting router now..."
+                curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                     -H "Content-Type: application/json" \
+                     -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+                (sleep 2; "$REBOOT_CMD") &
+            else
+                MSG="⚠️ *Router Reboot Requested*\n\nThis will disconnect all clients while the router restarts.\n\nReply \`REBOOT YES\` to this message within 2 minutes to reboot."
+                PAYLOAD=$(jq -n --arg c "$CHAT_ID" --arg t "$MSG" \
+                    '{chat_id: $c, text: $t, parse_mode: "Markdown"}')
+                RESP=$(curl -s $CURL_OPTS -X POST \
+                    "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                    -H "Content-Type: application/json" -d "$PAYLOAD")
+                PROMPT_MSGID=$(echo "$RESP" | jq -r '.result.message_id // empty')
+                if [ -n "$PROMPT_MSGID" ]; then
+                    echo "$PROMPT_MSGID $(date +%s)" > "$REBOOT_PENDING"
+                    logger -t tg_bot "Reboot confirmation prompt sent: msg_id=$PROMPT_MSGID"
+                else
+                    logger -t tg_bot "Reboot confirmation prompt send failed: $RESP"
+                fi
+            fi
 
         # === BLON COMMAND ===
         # Enable blacklist mode - only MACs in blacklist require approval

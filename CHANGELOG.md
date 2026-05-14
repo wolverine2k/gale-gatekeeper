@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Telegram `REBOOT` command** - Authorized Telegram chat can now reboot the router with a guarded two-step flow: send `REBOOT`, then reply `REBOOT YES` to the confirmation prompt within 2 minutes. Pending confirmation state is stored in `/tmp/gatekeeper_reboot_pending`, cleared after confirmation or expiry, and covered by `tests/test_reboot_command.sh` using a sandboxed fake reboot executable.
+- **Changelog-based GitHub release notes** - Tag builds now extract release body text from `CHANGELOG.md` before calling `softprops/action-gh-release`: the workflow prefers a section matching the pushed tag version (for example `## [1.1.0]`) and falls back to `## [Unreleased]` if no matching version section exists. The extracted text is passed through `body_path`, while GitHub-generated notes remain enabled for the automatic compare summary.
+
 ### Fixed
 - **Scheduled auto-approve silently no-op'd on the router**. `window_active_now` (in `gatekeeper.sh`, `tg_bot.sh`, and the test helper) called `date -d "today $stop" +%s` / `date -d "tomorrow $stop" +%s` — GNU coreutils relative-date syntax that BusyBox `date` does NOT support. BusyBox printed `date: invalid date 'today 23:59'` to stderr and wrote nothing to stdout, so `check_active_schedule_for_mac` saw an empty `end_epoch`, skipped every schedule, and `gatekeeper.sh` step 3.6 fell through to the regular notification path. Effect: every scheduled MAC sent a Telegram approval request inside its window instead of being silently auto-approved. `scheduler_tick` in `tg_bot.sh` was equally broken, so `/tmp/sched_active` stayed empty and SCHEDLIST never showed the `⏰ active` tag. Fix: switched to `date -d "$(date +%Y-%m-%d) HH:MM:00" +%s` (the `YYYY-MM-DD hh:mm:ss` form is in BusyBox's documented `-d` grammar AND is GNU-compatible). Cross-midnight branch now uses `today_stop_epoch + 86400` instead of `date -d "tomorrow $stop"`. All 28 schedule-helper unit tests still pass. Both `gatekeeper.sh` and `tg_bot.sh` must be redeployed for the fix to take effect.
 

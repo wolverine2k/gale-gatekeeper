@@ -230,6 +230,7 @@ Auth uses LuCI's standard ACL — anyone with router admin credentials can use t
 | `DISABLE` | Emergency disable (bypass all filtering) |
 | `LOG` | Display recent activity logs |
 | `CLEAR` | Clear logs and hostname cache |
+| `REBOOT` / `REBOOT YES` | Reboot the router after replying `REBOOT YES` to the confirmation prompt within 2 minutes |
 | `BACKUP` / `BACKUP NOSECRETS` | Send a config backup file (UCI text) to the chat. `NOSECRETS` blanks token/chat_id |
 | `RESTORE` (reply to backup file) / `YES` | Restore config from a backup file (additive merge; reply YES within 10 min to confirm) |
 
