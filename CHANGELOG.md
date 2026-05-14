@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Telegram `RESTART` command** - Authorized Telegram chat can now restart only Gatekeeper services without rebooting the router. The bot acknowledges first, then restarts `gatekeeper_init`, `gatekeeper_trigger_listener`, and finally `tg_gatekeeper` so the polling process can exit after the response is sent. Covered by the sandboxed Telegram system-command test, which asserts the router reboot path is not called.
 - **Telegram `REBOOT` command** - Authorized Telegram chat can now reboot the router with a guarded two-step flow: send `REBOOT`, then reply `REBOOT YES` to the confirmation prompt within 2 minutes. Pending confirmation state is stored in `/tmp/gatekeeper_reboot_pending`, cleared after confirmation or expiry, and covered by `tests/test_reboot_command.sh` using a sandboxed fake reboot executable.
 - **Changelog-based GitHub release notes** - Tag builds now extract release body text from `CHANGELOG.md` before calling `softprops/action-gh-release`: the workflow prefers a section matching the pushed tag version (for example `## [1.1.0]`) and falls back to `## [Unreleased]` if no matching version section exists. The extracted text is passed through `body_path`, while GitHub-generated notes remain enabled for the automatic compare summary.
 

@@ -50,6 +50,7 @@ The LuCI app is independent of the Telegram bot — both can run, neither needs 
 | `SCHEDREMOVE <name>` | Delete schedule |
 | `SCHEDOFF <name>` / `SCHEDON <name>` | Pause/resume schedule |
 | `SCHEDNOTIFY ON\|OFF\|STATUS` | Toggle schedule notifications |
+| `RESTART` | Restart Gatekeeper services only |
 | `REBOOT` | Begin router reboot confirmation |
 | `REBOOT YES` (reply to prompt) | Confirm pending router reboot |
 | `BACKUP [NOSECRETS]` | Send config backup as Telegram file |

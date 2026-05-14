@@ -1,5 +1,5 @@
 #!/bin/sh
-# Dev-only integration tests for the Telegram REBOOT command confirmation flow.
+# Dev-only integration tests for Telegram system-control commands.
 # Runs tg_bot.sh in a sandbox with stubbed router/Telegram commands so no real
 # reboot or network access occurs. Run from repo root:
 #   sh tests/test_reboot_command.sh
@@ -75,6 +75,7 @@ run_bot_scenario() {
     printf '%s\n' "$updates_json" > "$SANDBOX/updates.json"
     : > "$SANDBOX/send.log"
     : > "$SANDBOX/reboot.log"
+    : > "$SANDBOX/service.log"
 
     cat > "$SANDBOX/bin/uci" <<'STUB'
 #!/bin/sh
@@ -132,6 +133,12 @@ STUB
 #!/bin/sh
 echo reboot-called >> "$SANDBOX/reboot.log"
 STUB
+    for svc in gatekeeper_init tg_gatekeeper gatekeeper_trigger_listener; do
+        cat > "$SANDBOX/bin/$svc" <<'STUB'
+#!/bin/sh
+echo "$(basename "$0") $*" >> "$SANDBOX/service.log"
+STUB
+    done
     chmod +x "$SANDBOX/bin/"*
 
     if [ "$scenario" = "expired" ]; then
@@ -142,6 +149,9 @@ STUB
     SANDBOX="$SANDBOX" \
     GATEKEEPER_REBOOT_PENDING="$SANDBOX/reboot_pending" \
     GATEKEEPER_REBOOT_CMD="$SANDBOX/bin/fake-reboot" \
+    GATEKEEPER_INIT_SERVICE="$SANDBOX/bin/gatekeeper_init" \
+    TG_GATEKEEPER_SERVICE="$SANDBOX/bin/tg_gatekeeper" \
+    GATEKEEPER_TRIGGER_SERVICE="$SANDBOX/bin/gatekeeper_trigger_listener" \
     GATEKEEPER_TOKEN="test-token" \
     GATEKEEPER_CHAT_ID="123" \
         "$SANDBOX/tg_bot.sh" >/dev/null 2>&1 || :
@@ -169,7 +179,15 @@ assert_contains "Expired REBOOT confirmation is rejected" "$EXPIRED_BOX/send.log
 assert_not_contains "Expired REBOOT confirmation does not call reboot" "$EXPIRED_BOX/reboot.log" "reboot-called"
 assert_not_exists "Expired REBOOT confirmation clears pending state" "$EXPIRED_BOX/reboot_pending"
 
-rm -rf "$PROMPT_BOX" "$CONFIRM_BOX" "$EXPIRED_BOX"
+RESTART_UPDATES='{"ok":true,"result":[{"update_id":1,"message":{"message_id":70,"chat":{"id":"123"},"text":"RESTART"}}]}'
+RESTART_BOX=$(run_bot_scenario "$RESTART_UPDATES" restart)
+assert_contains "RESTART sends service restart acknowledgement" "$RESTART_BOX/send.log" "Restarting Gatekeeper services"
+assert_contains "RESTART calls gatekeeper_init restart" "$RESTART_BOX/service.log" "gatekeeper_init restart"
+assert_contains "RESTART calls trigger listener restart" "$RESTART_BOX/service.log" "gatekeeper_trigger_listener restart"
+assert_contains "RESTART calls tg_gatekeeper restart" "$RESTART_BOX/service.log" "tg_gatekeeper restart"
+assert_not_contains "RESTART does not call router reboot" "$RESTART_BOX/reboot.log" "reboot-called"
+
+rm -rf "$PROMPT_BOX" "$CONFIRM_BOX" "$EXPIRED_BOX" "$RESTART_BOX"
 
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

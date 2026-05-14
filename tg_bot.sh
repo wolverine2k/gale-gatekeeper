@@ -57,6 +57,7 @@
 # - ENABLE: Re-enable gatekeeper (clear bypass switch)
 # - DISABLE: Emergency disable gatekeeper (activate global bypass)
 # - CLEAR: Clear activity logs and hostname cache
+# - RESTART: Restart Gatekeeper services without rebooting the router
 # - REBOOT: Prompt for reply-based router reboot confirmation
 #
 # Callback Handlers:
@@ -139,6 +140,9 @@ OFFSET_FILE="/tmp/tg_offset"          # Telegram update ID tracking
 REBOOT_PENDING="${GATEKEEPER_REBOOT_PENDING:-/tmp/gatekeeper_reboot_pending}"
 REBOOT_CONFIRM_TTL="${GATEKEEPER_REBOOT_CONFIRM_TTL:-120}"
 REBOOT_CMD="${GATEKEEPER_REBOOT_CMD:-/sbin/reboot}"
+GATEKEEPER_INIT_SERVICE="${GATEKEEPER_INIT_SERVICE:-/etc/init.d/gatekeeper_init}"
+TG_GATEKEEPER_SERVICE="${TG_GATEKEEPER_SERVICE:-/etc/init.d/tg_gatekeeper}"
+GATEKEEPER_TRIGGER_SERVICE="${GATEKEEPER_TRIGGER_SERVICE:-/etc/init.d/gatekeeper_trigger_listener}"
 
 # Convert an nftables remaining-time string (e.g. "29m59s", "1h2m3s",
 # "1d23h59m59s", "59s") to total seconds on stdout. Always called via
@@ -458,6 +462,7 @@ while true; do
             MSG="${MSG}*Maintenance:*\n"
             MSG="${MSG}\`LOG\` - View recent activity logs\n"
             MSG="${MSG}\`CLEAR\` - Clear logs and name cache\n"
+            MSG="${MSG}\`RESTART\` - Restart Gatekeeper services only\n"
             MSG="${MSG}\`REBOOT\` - Reboot router after \`REBOOT YES\` confirmation\n"
             MSG="${MSG}\`BACKUP [NOSECRETS]\` - Send config backup as a Telegram file\n"
             MSG="${MSG}\`RESTORE\` (reply to a backup file) - Restore config from a backup; \`YES\` to confirm\n"
@@ -872,6 +877,35 @@ EOF
             > "$LOG_FILE"
             > "$NAME_MAP"
             curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID" -d "text=🗑️ Logs and name cache cleared."
+
+        # === RESTART COMMAND ===
+        # Restart only the Gatekeeper services. The bot service is restarted
+        # last because it terminates this polling process.
+        elif [ "$CMD" = "RESTART" ]; then
+            MSG="🔄 Restarting Gatekeeper services..."
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+            echo "$(date '+%Y-%m-%dT%H:%M:%S') - - - gatekeeper-services-restart-requested" >> "$LOG_FILE"
+            logger -t tg_bot "Gatekeeper service restart requested via Telegram"
+            (
+                sleep 2
+                if [ -x "$GATEKEEPER_INIT_SERVICE" ]; then
+                    "$GATEKEEPER_INIT_SERVICE" restart >/dev/null 2>&1
+                else
+                    logger -t tg_bot "Restart skipped: $GATEKEEPER_INIT_SERVICE not executable"
+                fi
+                if [ -x "$GATEKEEPER_TRIGGER_SERVICE" ]; then
+                    "$GATEKEEPER_TRIGGER_SERVICE" restart >/dev/null 2>&1
+                else
+                    logger -t tg_bot "Restart skipped: $GATEKEEPER_TRIGGER_SERVICE not executable"
+                fi
+                if [ -x "$TG_GATEKEEPER_SERVICE" ]; then
+                    "$TG_GATEKEEPER_SERVICE" restart >/dev/null 2>&1
+                else
+                    logger -t tg_bot "Restart skipped: $TG_GATEKEEPER_SERVICE not executable"
+                fi
+            ) &
 
         # === REBOOT COMMAND ===
         # Prompt for an explicit reply-based confirmation before rebooting the

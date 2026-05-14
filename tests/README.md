@@ -10,7 +10,7 @@ sh tests/test_busybox_compat.sh        # static-analysis: catches GNU-only date/
 sh tests/test_schedule_helpers.sh      # window_active_now / expand_days unit tests
 sh tests/test_backup_helpers.sh
 sh tests/test_restore_helpers.sh
-sh tests/test_reboot_command.sh       # Telegram REBOOT confirmation flow
+sh tests/test_reboot_command.sh       # Telegram REBOOT/RESTART system commands
 sh tests/test_rpcd_helpers.sh
 sh tests/test_rpcd_methods.sh
 ```
