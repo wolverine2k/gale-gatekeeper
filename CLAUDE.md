@@ -21,9 +21,10 @@ The system operates as a 5-stage event pipeline:
 2. MAC in `denied_macs` nftables set? → Silently exit
 3. MAC in `approved_macs` nftables set? → Silently exit
 4. `gatekeeper.main.disabled=1`? → Exit immediately (set by DISABLE command; persists across `fw4` reloads via UCI)
-5. Blacklist mode ON + MAC not in `blacklist_macs`? → Auto-approve with 24h timeout, send info message
-6. Active schedule for MAC? → Auto-approve until window end, optionally notify (controlled by `gatekeeper.main.schedule_notify`)
-7. Otherwise → Send approval request to Telegram with Approve/Deny buttons + start 5-minute auto-deny background timer
+5. `gatekeeper.main.block_randomized_macs=1` + MAC is locally administered (second hex digit 2/6/a/e)? → Add to `denied_macs` with 24h timeout, log `blocked-randomized-mac`, send Telegram notice, exit. Static leases (step 1) win, so trusted devices keep working.
+6. Blacklist mode ON + MAC not in `blacklist_macs`? → Auto-approve with 24h timeout, send info message
+7. Active schedule for MAC? → Auto-approve until window end, optionally notify (controlled by `gatekeeper.main.schedule_notify`)
+8. Otherwise → Send approval request to Telegram with Approve/Deny buttons + start 5-minute auto-deny background timer
 
 Note: Step 1 reads UCI directly (not the `static_macs` nftables set). The nftables set is a mirror populated by `gatekeeper_init` at boot **and** re-populated by `gatekeeper.nft` on every `fw4 reload` (including reloads triggered by WAN IP changes). The same is true for `blacklist_macs`. This dual-population is deliberate: automatic `fw4 reload` events would otherwise wipe the sets until a manual `SYNC`.
 
@@ -197,6 +198,9 @@ Substitute `<version>` with the version baked into the file you downloaded (e.g.
 - `SCHEDREMOVE <name>` — Delete a schedule. If currently active, MAC is removed from `approved_macs` immediately.
 - `SCHEDOFF <name>` / `SCHEDON <name>` — Pause/resume a schedule without deleting it.
 - `SCHEDNOTIFY ON|OFF|STATUS` — Toggle the optional info message on schedule auto-approve (default OFF).
+
+**Anti-Randomization:**
+- `RANDBLOCK ON|OFF|STATUS` — Toggle `gatekeeper.main.block_randomized_macs`. When ON, devices using a locally-administered (randomized) MAC (second hex digit `2`/`6`/`A`/`E` — the bit iOS Private Wi-Fi Address / Android MAC randomization set) are denied 24h instead of prompting for approval. Heuristic: `is_randomized_mac` in `gatekeeper.sh` (mirrored in `tests/test_randomized_mac.sh`). Static leases always bypass.
 
 Schedule definitions live in UCI (`/etc/config/gatekeeper`) as `config schedule '<name>'` sections; they survive reboots. The `scheduler_tick()` function in `tg_bot.sh` reconciles `approved_macs` once per polling-loop iteration. `gatekeeper.sh` step 3.6 reactively auto-approves mid-window DHCP events. A manual `REVOKE` during an active window adds the MAC to `denied_macs` for 30 min; the scheduler skips re-push while the deny entry exists, so REVOKE remains effective for at least 30 minutes during a window.
 

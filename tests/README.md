@@ -13,6 +13,7 @@ sh tests/test_restore_helpers.sh
 sh tests/test_reboot_command.sh       # Telegram REBOOT/RESTART system commands
 sh tests/test_rpcd_helpers.sh
 sh tests/test_rpcd_methods.sh
+sh tests/test_randomized_mac.sh      # is_randomized_mac (anti-randomization heuristic)
 ```
 
 **macOS prerequisite:** the helpers call `date -d "YYYY-MM-DD HH:MM:SS"`,

@@ -235,7 +235,7 @@ list)
   "restore_apply": {},
   "test_bot": {},
   "settings_get": {},
-  "settings_set": { "token": "string", "chat_id": "string", "blacklist_mode": "boolean", "schedule_notify": "boolean", "disabled": "boolean" }
+  "settings_set": { "token": "string", "chat_id": "string", "blacklist_mode": "boolean", "schedule_notify": "boolean", "block_randomized_macs": "boolean", "disabled": "boolean" }
 }
 EOF
     exit 0
@@ -260,6 +260,7 @@ case "$METHOD" in
         disabled=$(uci -q get gatekeeper.main.disabled || echo 0)
         bl_mode=$(uci -q get gatekeeper.main.blacklist_mode || echo 0)
         sched_notify=$(uci -q get gatekeeper.main.schedule_notify || echo 0)
+        block_rand=$(uci -q get gatekeeper.main.block_randomized_macs || echo 0)
         # Counts
         n_active=$(nft list set inet fw4 approved_macs 2>/dev/null | grep -c "expires")
         n_denied=$(nft list set inet fw4 denied_macs 2>/dev/null | grep -c "expires")
@@ -279,10 +280,11 @@ case "$METHOD" in
         # NTP / clock sanity
         clock_synced=false
         [ "$(date +%Y)" -ge 2024 ] && clock_synced=true
-        printf '{"disabled":%s,"blacklist_mode":%s,"schedule_notify":%s,"counts":{"active":%s,"denied":%s,"static":%s,"blacklist":%s,"schedules":%s,"active_schedules":%s},"bot_running":%s,"firewall_active":%s,"clock_synced":%s,"hostname":%s,"now_epoch":%s}\n' \
+        printf '{"disabled":%s,"blacklist_mode":%s,"schedule_notify":%s,"block_randomized_macs":%s,"counts":{"active":%s,"denied":%s,"static":%s,"blacklist":%s,"schedules":%s,"active_schedules":%s},"bot_running":%s,"firewall_active":%s,"clock_synced":%s,"hostname":%s,"now_epoch":%s}\n' \
             "$([ "$disabled" = "1" ] && echo true || echo false)" \
             "$([ "$bl_mode" = "1" ] && echo true || echo false)" \
             "$([ "$sched_notify" = "1" ] && echo true || echo false)" \
+            "$([ "$block_rand" = "1" ] && echo true || echo false)" \
             "$n_active" "$n_denied" "$n_static" "$n_blacklist" "$n_schedules" "$n_active_schedules" \
             "$bot_running" "$chain_active" "$clock_synced" \
             "$(json_escape "$(uci -q get system.@system[0].hostname || cat /proc/sys/kernel/hostname 2>/dev/null || echo openwrt)")" \
@@ -758,6 +760,7 @@ case "$METHOD" in
         chat_id=$(uci -q get gatekeeper.main.chat_id)
         bl_mode=$(uci -q get gatekeeper.main.blacklist_mode || echo 0)
         sched_notify=$(uci -q get gatekeeper.main.schedule_notify || echo 0)
+        block_rand=$(uci -q get gatekeeper.main.block_randomized_macs || echo 0)
         disabled=$(uci -q get gatekeeper.main.disabled || echo 0)
         # Mask the token: show last 4 chars only.
         token_masked=""
@@ -765,12 +768,13 @@ case "$METHOD" in
             token_tail=$(echo "$token" | awk '{print substr($0, length($0)-3, 4)}')
             token_masked="****${token_tail}"
         fi
-        printf '{"token":%s,"token_masked":%s,"chat_id":%s,"blacklist_mode":%s,"schedule_notify":%s,"disabled":%s}\n' \
+        printf '{"token":%s,"token_masked":%s,"chat_id":%s,"blacklist_mode":%s,"schedule_notify":%s,"block_randomized_macs":%s,"disabled":%s}\n' \
             "$(json_escape "$token")" \
             "$(json_escape "$token_masked")" \
             "$(json_escape "$chat_id")" \
             "$([ "$bl_mode" = "1" ] && echo true || echo false)" \
             "$([ "$sched_notify" = "1" ] && echo true || echo false)" \
+            "$([ "$block_rand" = "1" ] && echo true || echo false)" \
             "$([ "$disabled" = "1" ] && echo true || echo false)"
         ;;
     settings_set)
@@ -778,12 +782,14 @@ case "$METHOD" in
         chat_id=$(field "$INPUT" .chat_id)
         bl_mode=$(field_raw "$INPUT" .blacklist_mode)
         sched_notify=$(field_raw "$INPUT" .schedule_notify)
+        block_rand=$(field_raw "$INPUT" .block_randomized_macs)
         disabled=$(field_raw "$INPUT" .disabled)
         # Only update fields that were supplied (non-empty / non-null).
         [ -n "$token" ] && [ "$token" != "null" ] && uci set gatekeeper.main.token="$token"
         [ -n "$chat_id" ] && [ "$chat_id" != "null" ] && uci set gatekeeper.main.chat_id="$chat_id"
         case "$bl_mode" in true) uci set gatekeeper.main.blacklist_mode=1 ;; false) uci set gatekeeper.main.blacklist_mode=0 ;; esac
         case "$sched_notify" in true) uci set gatekeeper.main.schedule_notify=1 ;; false) uci set gatekeeper.main.schedule_notify=0 ;; esac
+        case "$block_rand" in true) uci set gatekeeper.main.block_randomized_macs=1 ;; false) uci set gatekeeper.main.block_randomized_macs=0 ;; esac
         case "$disabled" in
             true)  uci set gatekeeper.main.disabled=1 ;;
             false) uci set gatekeeper.main.disabled=0 ;;

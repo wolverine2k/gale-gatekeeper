@@ -120,7 +120,11 @@ return view.extend({
 				E('div', { 'style': 'margin-top: 0.4em' }, [
 					statusBadge('schedule_notify', overview.schedule_notify,
 						_('Schedule notify ON'), _('Schedule notify OFF'))
-				])
+				]),
+					E('div', { 'style': 'margin-top: 0.4em' }, [
+						statusBadge('block_randomized_macs', overview.block_randomized_macs,
+							_('Anti-Randomization ON'), _('Anti-Randomization OFF'))
+					])
 			])
 		]);
 

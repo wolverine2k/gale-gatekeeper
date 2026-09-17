@@ -457,6 +457,7 @@ while true; do
             MSG="${MSG}\`SCHEDREMOVE <name>\` - Delete a schedule\n"
             MSG="${MSG}\`SCHEDOFF <name>\` / \`SCHEDON <name>\` - Pause/resume\n"
             MSG="${MSG}\`SCHEDNOTIFY ON|OFF|STATUS\` - Toggle schedule notifications\n"
+            MSG="${MSG}\`RANDBLOCK ON|OFF|STATUS\` - Toggle anti-randomization (block randomized MACs)\n"
             MSG="${MSG}_Days:_ daily | weekdays | weekends | mon,tue,...\n"
             MSG="${MSG}_Times:_ HH:MM (24h, local TZ). Stop ≤ start = crosses midnight.\n\n"
             MSG="${MSG}*Maintenance:*\n"
@@ -1396,6 +1397,47 @@ EOF
                     ;;
                 *)
                     MSG="❌ Usage: SCHEDNOTIFY ON | OFF | STATUS"
+                    ;;
+            esac
+            curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"$MSG\",\"parse_mode\":\"Markdown\"}"
+        # === RANDBLOCK COMMAND ===
+        # Toggle the Anti-Randomization flag (block_randomized_macs). When ON,
+        # devices whose MAC is locally administered (second hex digit 2/6/a/e)
+        # are denied outright instead of prompting for approval.
+        # Usage: RANDBLOCK ON | OFF | STATUS
+        elif [ "$CMD" = "RANDBLOCK" ] && [ -n "$ARG" ]; then
+            SUB=$(echo "$ARG" | tr 'a-z' 'A-Z')
+            case "$SUB" in
+                ON)
+                    uci set gatekeeper.main.block_randomized_macs=1
+                    if uci commit gatekeeper; then
+                        MSG="🚫 Anti-Randomization: *ENABLED*\n\nDevices using a randomized MAC (2/6/A/E second digit) will be denied."
+                    else
+                        uci revert gatekeeper 2>/dev/null
+                        MSG="❌ Failed to update setting (UCI commit error)"
+                    fi
+                    ;;
+                OFF)
+                    uci set gatekeeper.main.block_randomized_macs=0
+                    if uci commit gatekeeper; then
+                        MSG="✅ Anti-Randomization: *DISABLED*\n\nRandomized MACs are treated like any other device."
+                    else
+                        uci revert gatekeeper 2>/dev/null
+                        MSG="❌ Failed to update setting (UCI commit error)"
+                    fi
+                    ;;
+                STATUS)
+                    BR=$(uci -q get gatekeeper.main.block_randomized_macs || echo 0)
+                    if [ "$BR" = "1" ]; then
+                        MSG="🚫 Anti-Randomization: *ENABLED*\n\nRandomized MACs (2/6/A/E second digit) are denied."
+                    else
+                        MSG="✅ Anti-Randomization: *DISABLED*\n\nRandomized MACs are treated normally."
+                    fi
+                    ;;
+                *)
+                    MSG="❌ Usage: RANDBLOCK ON | OFF | STATUS"
                     ;;
             esac
             curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \

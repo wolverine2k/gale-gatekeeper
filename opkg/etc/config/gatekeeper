@@ -61,6 +61,18 @@ config gatekeeper 'main'
 	# Toggle via Telegram: SCHEDNOTIFY ON / OFF / STATUS
 	option schedule_notify '0'
 
+	# Anti-Randomization / block randomized MACs (optional, default: 0)
+	# 0 = OFF (randomized MACs are treated like any other device)
+	# 1 = ON  (devices using a locally-administered / randomized MAC are
+	#          denied outright instead of prompting for approval)
+	# Per IEEE 802.11, a MAC is locally administered when its second hex
+	# digit is 2, 6, A, or E (e.g. x2:xx:xx:xx:xx:xx). iOS Private Wi-Fi
+	# Address and Android MAC randomization always set this bit, so this
+	# flag blocks privacy-randomized clients while letting real hardware
+	# MACs through. Static DHCP leases are always honored.
+	# Toggle via Telegram: RANDBLOCK ON / OFF / STATUS
+	option block_randomized_macs '0'
+
 # Blacklist MAC addresses
 # When blacklist mode is ON, only these MACs will require approval
 # All other MACs will be auto-approved with 24-hour timeout

@@ -103,6 +103,23 @@ hm_to_min() {
     echo "$1" | awk -F: '{print $1 * 60 + $2}'
 }
 
+# Anti-Randomization helper — kept in sync with the copy in
+# tests/test_randomized_mac.sh. When you change one, change both.
+#
+# Returns 0 (true) if $1 is a locally-administered (randomized) MAC address.
+# Per IEEE 802.11, the "locally administered" bit is the second-least-
+# significant bit of the first octet. In practice this means the SECOND hex
+# digit of the MAC is 2, 6, A, or E (e.g. x2:xx:xx:xx:xx:xx). Devices that
+# randomize their MAC (iOS Private Wi-Fi Address, Android MAC randomization)
+# always set this bit, so this is a reliable heuristic for blocking
+# privacy-randomized clients. Input is assumed already lowercased.
+is_randomized_mac() {
+    case "$1" in
+        ?2:*|?6:*|?a:*|?e:*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 window_active_now() {
     days="$1"; start="$2"; stop="$3"; today_dow="$4"; now_hm="$5"
     expanded=$(expand_days "$days")
@@ -230,6 +247,36 @@ fi
 # Step 3: Input validation - Ensure valid MAC provided
 if [ -z "$(echo "$MAC" | tr -d ' ')" ]; then
     exit 0  # Invalid input, nothing to process
+fi
+
+# Step 3.4: Anti-Randomization — block locally-administered (randomized) MACs.
+# When block_randomized_macs is enabled, devices using a randomized MAC
+# (second hex digit 2/6/a/e) are denied outright instead of prompting for
+# approval. Precedence: static leases (step 1) and existing denied/approved
+# entries (steps 2/2.5) win, so trusted devices and prior decisions are
+# honored. This gate runs BEFORE blacklist auto-approve and schedule
+# auto-approve so a randomized MAC can never slip through those paths.
+BLOCK_RAND=$(uci -q get gatekeeper.main.block_randomized_macs || echo "0")
+if [ "$is_static" -eq 0 ] && [ "$BLOCK_RAND" = "1" ] && is_randomized_mac "$MAC"; then
+    # Add to denied_macs so the firewall drops the traffic and we don't
+    # re-notify on every DHCP renewal. 24h timeout keeps the block long
+    # enough to defeat per-renewal randomization flapping while still
+    # expiring if the device later adopts a stable address.
+    nft "delete element inet fw4 denied_macs { $MAC }" 2>/dev/null
+    nft "add element inet fw4 denied_macs { $MAC timeout 24h }" 2>/dev/null
+    logger -t gatekeeper "Blocked randomized MAC: $MAC ($HOSTNAME) - $IP"
+    echo "$(date '+%Y-%m-%dT%H:%M:%S') $MAC $IP ${HOSTNAME:--} blocked-randomized-mac" >> "$LOG_FILE"
+
+    MESSAGE="🚫 *Blocked Randomized MAC*%0A%0A"
+    MESSAGE="${MESSAGE}🔹 *Device:* ${HOSTNAME:-Unknown}%0A"
+    MESSAGE="${MESSAGE}🔹 *MAC:* ${MAC}%0A"
+    MESSAGE="${MESSAGE}🔹 *IP:* ${IP}%0A"
+    MESSAGE="${MESSAGE}🔹 *Access:* denied 24h (locally-administered address)"
+    curl -s $CURL_OPTS -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+        -d "chat_id=${CHAT_ID}" \
+        -d "text=${MESSAGE}" \
+        -d "parse_mode=Markdown" > /dev/null
+    exit 0
 fi
 
 # Step 3.5: Check Blacklist Mode

@@ -50,6 +50,7 @@ The LuCI app is independent of the Telegram bot — both can run, neither needs 
 | `SCHEDREMOVE <name>` | Delete schedule |
 | `SCHEDOFF <name>` / `SCHEDON <name>` | Pause/resume schedule |
 | `SCHEDNOTIFY ON\|OFF\|STATUS` | Toggle schedule notifications |
+| `RANDBLOCK ON\|OFF\|STATUS` | Toggle anti-randomization (deny randomized MACs) |
 | `RESTART` | Restart Gatekeeper services only |
 | `REBOOT` | Begin router reboot confirmation |
 | `REBOOT YES` (reply to prompt) | Confirm pending router reboot |
@@ -203,7 +204,7 @@ rm -rf /tmp/dns_locks/*
 
 | File | Purpose |
 |------|---------|
-| `/etc/config/gatekeeper` | Bot token, chat ID, blacklist mode, `schedule_notify`, `disabled` flag, blacklist list, schedule sections |
+| `/etc/config/gatekeeper` | Bot token, chat ID, blacklist mode, `schedule_notify`, `block_randomized_macs`, `disabled` flag, blacklist list, schedule sections |
 | `/etc/config/dhcp` | Static DHCP host entries (read by gatekeeper for static-lease bypass) |
 | `/etc/gatekeeper/gatekeeper.nft` | Firewall rules — includes definitions for the four nftables sets |
 | `/tmp/gatekeeper.log` | Activity logs (auto-rotates at 1000 lines) |

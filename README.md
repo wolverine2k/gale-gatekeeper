@@ -23,6 +23,7 @@ A Telegram-based network access control system for OpenWrt routers. Get instant 
 - **Auto-Deny Timer** - Unapproved devices are automatically denied after 5 minutes
 - **Rate Limiting** - Prevents notification spam from network flapping
 - **Emergency Bypass** - Global off-switch for emergencies
+- **Anti-Randomization** ⭐ NEW - Optional `block_randomized_macs` flag denies devices using a locally-administered (randomized) MAC (second hex digit `2`/`6`/`A`/`E` — the bit iOS Private Wi-Fi Address and Android MAC randomization always set) instead of prompting for approval. Static DHCP leases are always honored. Toggle via `RANDBLOCK ON|OFF|STATUS` or the LuCI Settings page.
 
 ### Advanced Features
 - **LuCI Web UI** ⭐ NEW - Optional `luci-app-gatekeeper` sibling package adds a six-page browser admin interface (Overview, Devices, Blacklist, Schedules, Backup/Restore, Settings) under `Services → Gatekeeper`. Independent of the Telegram bot — both surfaces share the same UCI + nftables state, neither requires the other. Auth uses LuCI's standard ACL (router admin password). See the LuCI Web UI section below for details.
@@ -181,7 +182,7 @@ Services → Gatekeeper
 - **Blacklist** — slide toggle for `blacklist_mode`, MAC list editor with online indicators (matched against `/tmp/dhcp.leases`), bulk Clear All.
 - **Schedules** — table + modal CRUD with day-preset selector (Daily / Weekdays / Weekends / Custom), browser-native time pickers, hyphen-to-underscore name correction hints, Pause/Resume toggle, ⏰ tag for currently-active windows.
 - **Backup / Restore** — direct browser download (with-secrets / NO-secrets) and drag-and-drop file upload. Two-step preview-then-apply restore flow with the same merge plan the Telegram `RESTORE` flow produces.
-- **Settings** — form for bot token (masked + Show toggle), chat_id, blacklist_mode, schedule_notify, disabled flag. **"Test bot connection"** button calls Telegram `getMe` and shows username/first-name on success — useful for verifying credentials at first-time setup.
+- **Settings** — form for bot token (masked + Show toggle), chat_id, blacklist_mode, schedule_notify, block_randomized_macs (anti-randomization), disabled flag. **"Test bot connection"** button calls Telegram `getMe` and shows username/first-name on success — useful for verifying credentials at first-time setup.
 
 ### Architecture
 
@@ -221,6 +222,13 @@ Auth uses LuCI's standard ACL — anyone with router admin credentials can use t
 | `SCHEDREMOVE <name>` | Delete a schedule (removes from `approved_macs` if currently active) |
 | `SCHEDOFF <name>` / `SCHEDON <name>` | Pause or resume a schedule without deleting it |
 | `SCHEDNOTIFY ON\|OFF\|STATUS` | Toggle info message on schedule auto-approve (default OFF) |
+
+### Anti-Randomization ⭐ NEW
+| Command | Description |
+|---------|-------------|
+| `RANDBLOCK ON` | Deny devices using a randomized MAC (second hex digit `2`/`6`/`A`/`E`) instead of prompting for approval |
+| `RANDBLOCK OFF` | Treat randomized MACs like any other device (default) |
+| `RANDBLOCK STATUS` | Show current anti-randomization flag |
 
 ### System Control
 | Command | Description |
@@ -285,6 +293,10 @@ gatekeeper.sh — validation order:
   2. denied_macs?        → silent exit
   3. approved_macs?      → silent exit
   4. disabled flag?      → exit
+  5. randomized MAC + block_randomized_macs? → deny 24h (denied_macs)
+  6. blacklist mode?     → auto-approve 24h (or fall through if blacklisted)
+  7. active schedule?    → auto-approve until window end
+  8. otherwise          → send approval notification
   5. blacklist mode ON,
      MAC not blacklisted? → auto-approve 24h, info message
   6. active schedule?    → auto-approve until window end (silent
@@ -379,6 +391,7 @@ config gatekeeper 'main'
     option blacklist_mode '0'      # 0=OFF, 1=ON
     option disabled '0'            # 0=active, 1=emergency-disabled (set by DISABLE)
     option schedule_notify '0'     # 0=silent, 1=info message on schedule auto-approve
+    option block_randomized_macs '0'  # 0=OFF, 1=deny randomized MACs (2/6/A/E 2nd digit)
 
 config blacklist 'blacklist'
     list mac 'aa:bb:cc:dd:ee:ff'   # Optional blacklist entries

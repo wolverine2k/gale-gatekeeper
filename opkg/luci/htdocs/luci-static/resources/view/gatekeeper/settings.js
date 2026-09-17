@@ -13,7 +13,7 @@ var callSettingsGet = rpc.declare({
 });
 var callSettingsSet = rpc.declare({
 	object: 'gatekeeper', method: 'settings_set',
-	params: ['token', 'chat_id', 'blacklist_mode', 'schedule_notify', 'disabled'],
+	params: ['token', 'chat_id', 'blacklist_mode', 'schedule_notify', 'block_randomized_macs', 'disabled'],
 	expect: {}
 });
 var callTestBot = rpc.declare({
@@ -76,6 +76,8 @@ return view.extend({
 			_('Blacklist mode (only blacklisted MACs require approval; others auto-approved 24h)'));
 		var schedNotify = makeToggle('gk-set-sn', s.schedule_notify,
 			_('Schedule notifications (info message on each schedule auto-approve)'));
+		var blockRand = makeToggle('gk-set-br', s.block_randomized_macs,
+			_('Anti-Randomization (deny devices with a randomized MAC — 2/6/A/E second hex digit)'));
 		var disabledFlag = makeToggle('gk-set-disabled', s.disabled,
 			_('Emergency disabled (flushes the gatekeeper_forward chain — all traffic passes!)'));
 
@@ -92,6 +94,7 @@ return view.extend({
 					chatIdInput.value,
 					document.getElementById('gk-set-bl').checked,
 					document.getElementById('gk-set-sn').checked,
+					document.getElementById('gk-set-br').checked,
 					document.getElementById('gk-set-disabled').checked
 				).then(function (resp) {
 					if (resp.error) throw new Error(resp.error);
@@ -209,6 +212,7 @@ return view.extend({
 				E('h3', {}, _('Modes')),
 				blMode,
 				schedNotify,
+				blockRand,
 				disabledFlag
 			]),
 
