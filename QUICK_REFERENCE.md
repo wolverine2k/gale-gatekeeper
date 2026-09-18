@@ -209,6 +209,8 @@ rm -rf /tmp/dns_locks/*
 | `/etc/gatekeeper/gatekeeper.nft` | Firewall rules — includes definitions for the four nftables sets |
 | `/tmp/gatekeeper.log` | Activity logs (auto-rotates at 1000 lines) |
 | `/tmp/sched_active` | Currently-active schedules (rebuilt every `scheduler_tick`) |
+| `/tmp/mac_names` | MAC→name cache. Hostnames captured at approval; also written by OUI vendor enrichment when a device reports no hostname |
+| `/tmp/gatekeeper_oui` | Per-OUI maclookup.app vendor cache (one file per OUI prefix; clears on reboot) |
 
 ## 🔑 First Time Setup Checklist
 

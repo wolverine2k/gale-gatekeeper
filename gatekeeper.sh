@@ -86,6 +86,15 @@ if [ -z "$TOKEN" ] || [ -z "$CHAT_ID" ]; then
 fi
 
 LOG_FILE="/tmp/gatekeeper.log"
+# MAC→name cache shared with tg_bot.sh. Written here so STATUS/DSTATUS can
+# resolve a vendor name for devices that report no hostname of their own
+# (otherwise they fall back to "Unknown Device" / "Guest").
+NAME_MAP="/tmp/mac_names"
+# Per-OUI vendor cache for the maclookup.app enrichment. Vendor info depends
+# only on the OUI (first 3 octets), so we cache one file per OUI prefix to stay
+# well under the public API's rate limit and avoid re-querying on every DHCP
+# renewal. Lives in /tmp (tmpfs) → clears on reboot (vendors rarely change).
+OUI_CACHE_DIR="/tmp/gatekeeper_oui"
 
 # Schedule helpers — kept identical to copies in tg_bot.sh and the
 # unit-test file tests/test_schedule_helpers.sh. When you change one,
@@ -118,6 +127,64 @@ is_randomized_mac() {
         ?2:*|?6:*|?a:*|?e:*) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# OUI vendor enrichment — kept in sync with the copy in
+# tests/test_maclookup.sh. When you change one, change both.
+#
+# lookup_mac_vendor <mac>
+#   Best-effort OUI vendor lookup via the maclookup.app public API
+#   (https://maclookup.app/api-v2/documentation). The API classifies a MAC as
+#   locally administered ("isRand":true) when the IEEE locally-administered
+#   bit is set — the same condition is_randomized_mac checks offline — and
+#   returns the issuing vendor for real (UAA) addresses.
+#
+#   Vendor info depends only on the OUI (first 3 octets), so results are
+#   cached per-OUI under $OUI_CACHE_DIR to stay well under the API's rate
+#   limit and avoid re-querying on every DHCP renewal.
+#
+#   On stdout, emits TWO lines for a real (non-randomized) MAC with a known
+#   vendor: the company name, then the ISO country code. Emits nothing for
+#   randomized MACs, unknown OUIs, or any network/parse failure. Always
+#   exits 0 — this is enrichment, never a hard error. Requires jq (a hard
+#   runtime dependency of the gatekeeper package).
+lookup_mac_vendor() {
+    mac=$(echo "$1" | tr 'A-Z' 'a-z')
+    [ -n "$mac" ] || return 0
+    oui=$(echo "$mac" | tr -d ':' | cut -c1-6)
+    [ -n "$oui" ] || return 0
+
+    mkdir -p "$OUI_CACHE_DIR" 2>/dev/null
+    cache="$OUI_CACHE_DIR/$oui"
+
+    is_rand=""; found=""; company=""; country=""
+    if [ -f "$cache" ]; then
+        is_rand=$(sed -n '1p' "$cache")
+        found=$(sed -n '2p' "$cache")
+        company=$(sed -n '3p' "$cache")
+        country=$(sed -n '4p' "$cache")
+    else
+        # -m 4 bounds latency so a slow/unreachable API never blocks the
+        # notification. Only cache definitive (success) answers so a
+        # transient API error is retried on the next connection.
+        resp=$(curl -s -m 4 --connect-timeout 3 \
+            "https://api.maclookup.app/v2/macs/$mac" 2>/dev/null)
+        success=$(printf '%s' "$resp" | jq -r '.success // false' 2>/dev/null)
+        if [ "$success" = "true" ]; then
+            is_rand=$(printf '%s' "$resp" | jq -r '(.isRand // false) | tostring' 2>/dev/null)
+            found=$(printf '%s' "$resp" | jq -r '(.found // false) | tostring' 2>/dev/null)
+            company=$(printf '%s' "$resp" | jq -r '.company // ""' 2>/dev/null)
+            country=$(printf '%s' "$resp" | jq -r '.country // ""' 2>/dev/null)
+            printf '%s\n%s\n%s\n%s\n' "$is_rand" "$found" "$company" "$country" \
+                > "$cache" 2>/dev/null
+        fi
+    fi
+
+    # Only surface vendor info for real (non-randomized), vendor-found MACs.
+    if [ "$is_rand" = "false" ] && [ "$found" = "true" ] && [ -n "$company" ]; then
+        printf '%s\n%s\n' "$company" "$country"
+    fi
+    return 0
 }
 
 window_active_now() {
@@ -349,6 +416,22 @@ fi
 
 # Step 4: For non-static devices with 'add' action, send notification
 if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ]; then
+    # OUI vendor enrichment (maclookup.app API, cached per-OUI). For real
+    # (non-randomized) MACs the issuing vendor is appended to the notification
+    # so the admin can recognise the device. If the device reported no
+    # hostname, the vendor is also cached in NAME_MAP so STATUS/DSTATUS
+    # resolve it instead of falling back to "Unknown Device" / "Guest".
+    VENDOR=""; VCOUNTRY=""
+    _vi=$(lookup_mac_vendor "$MAC")
+    VENDOR=$(echo "$_vi" | sed -n '1p')
+    VCOUNTRY=$(echo "$_vi" | sed -n '2p')
+    if [ -n "$VENDOR" ] && [ -z "$HOSTNAME" ]; then
+        # Don't clobber an existing cached name (may be a real hostname).
+        if ! grep -qi "^$MAC=" "$NAME_MAP" 2>/dev/null; then
+            echo "$MAC=$VENDOR" >> "$NAME_MAP"
+        fi
+    fi
+
     # Configure Telegram inline keyboard with Approve/Deny buttons
     # Callback data format: action_MAC (e.g., "approve_00:11:22:33:44:55")
     KEYBOARD="{\"inline_keyboard\": [[{\"text\": \"✅ Approve\", \"callback_data\": \"approve_$MAC\"}, {\"text\": \"❌ Deny\", \"callback_data\": \"deny_$MAC\"}]]}"
@@ -356,6 +439,10 @@ if [ "$is_static" -eq 0 ] && [ "$ACTION" = "add" ]; then
     # Compose message with Markdown formatting
     # %0A is URL-encoded newline for Telegram API
     MESSAGE="⚠️ *New Device Connection*%0A*Host:* ${HOSTNAME:-Unknown}%0A*MAC:* $MAC%0A*IP:* $IP"
+    if [ -n "$VENDOR" ]; then
+        MESSAGE="${MESSAGE}%0A*Vendor:* ${VENDOR}"
+        [ -n "$VCOUNTRY" ] && MESSAGE="${MESSAGE} (${VCOUNTRY})"
+    fi
 
     # Log the connection event
     echo "$(date '+%Y-%m-%dT%H:%M:%S') $MAC $IP ${HOSTNAME:--} connected" >> "$LOG_FILE"

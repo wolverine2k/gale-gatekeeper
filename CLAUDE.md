@@ -24,7 +24,7 @@ The system operates as a 5-stage event pipeline:
 5. `gatekeeper.main.block_randomized_macs=1` + MAC is locally administered (second hex digit 2/6/a/e)? → Add to `denied_macs` with 24h timeout, log `blocked-randomized-mac`, send Telegram notice, exit. Static leases (step 1) win, so trusted devices keep working.
 6. Blacklist mode ON + MAC not in `blacklist_macs`? → Auto-approve with 24h timeout, send info message
 7. Active schedule for MAC? → Auto-approve until window end, optionally notify (controlled by `gatekeeper.main.schedule_notify`)
-8. Otherwise → Send approval request to Telegram with Approve/Deny buttons + start 5-minute auto-deny background timer
+8. Otherwise → Send approval request to Telegram with Approve/Deny buttons + start 5-minute auto-deny background timer. Before sending, `lookup_mac_vendor` queries the maclookup.app API (cached per-OUI in `/tmp/gatekeeper_oui`); for real (non-randomized) MACs the issuing vendor (company + country) is appended to the message, and — if the device reported no hostname — cached in `/tmp/mac_names` so `STATUS`/`DSTATUS`/LuCI Devices resolve it by vendor instead of `Unknown Device`/`Guest`. Requires `jq`.
 
 Note: Step 1 reads UCI directly (not the `static_macs` nftables set). The nftables set is a mirror populated by `gatekeeper_init` at boot **and** re-populated by `gatekeeper.nft` on every `fw4 reload` (including reloads triggered by WAN IP changes). The same is true for `blacklist_macs`. This dual-population is deliberate: automatic `fw4 reload` events would otherwise wipe the sets until a manual `SYNC`.
 
@@ -201,6 +201,9 @@ Substitute `<version>` with the version baked into the file you downloaded (e.g.
 
 **Anti-Randomization:**
 - `RANDBLOCK ON|OFF|STATUS` — Toggle `gatekeeper.main.block_randomized_macs`. When ON, devices using a locally-administered (randomized) MAC (second hex digit `2`/`6`/`A`/`E` — the bit iOS Private Wi-Fi Address / Android MAC randomization set) are denied 24h instead of prompting for approval. Heuristic: `is_randomized_mac` in `gatekeeper.sh` (mirrored in `tests/test_randomized_mac.sh`). Static leases always bypass.
+
+**OUI Vendor Enrichment:**
+- `lookup_mac_vendor` in `gatekeeper.sh` (mirrored in `tests/test_maclookup.sh`) queries the maclookup.app API on every new-device notification. For real (non-randomized) MACs with a known vendor, the company + ISO country code is appended to the `⚠️ New Device Connection` Telegram message, and — when the device reports no hostname — cached in `/tmp/mac_names` so `STATUS`/`DSTATUS`/LuCI Devices list it by vendor instead of `Unknown Device`/`Guest`. Results are cached per-OUI under `/tmp/gatekeeper_oui` (one API call per vendor, ever); randomized MACs are skipped; transient API errors don't cache (retry next time); and any network/parse failure degrades gracefully. Requires `jq`.
 
 Schedule definitions live in UCI (`/etc/config/gatekeeper`) as `config schedule '<name>'` sections; they survive reboots. The `scheduler_tick()` function in `tg_bot.sh` reconciles `approved_macs` once per polling-loop iteration. `gatekeeper.sh` step 3.6 reactively auto-approves mid-window DHCP events. A manual `REVOKE` during an active window adds the MAC to `denied_macs` for 30 min; the scheduler skips re-push while the deny entry exists, so REVOKE remains effective for at least 30 minutes during a window.
 

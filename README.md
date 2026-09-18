@@ -24,6 +24,7 @@ A Telegram-based network access control system for OpenWrt routers. Get instant 
 - **Rate Limiting** - Prevents notification spam from network flapping
 - **Emergency Bypass** - Global off-switch for emergencies
 - **Anti-Randomization** ⭐ NEW - Optional `block_randomized_macs` flag denies devices using a locally-administered (randomized) MAC (second hex digit `2`/`6`/`A`/`E` — the bit iOS Private Wi-Fi Address and Android MAC randomization always set) instead of prompting for approval. Static DHCP leases are always honored. Toggle via `RANDBLOCK ON|OFF|STATUS` or the LuCI Settings page.
+- **OUI Vendor Enrichment** ⭐ NEW - On every new-device notification, the issuing OUI vendor is looked up via the maclookup.app public API and appended to the Telegram message (company + country). When the device reports no hostname of its own, the vendor name is cached as its display name so `STATUS`/`DSTATUS` list it by vendor instead of falling back to `Unknown Device` / `Guest`. Results are cached per-OUI (one API call per vendor, ever), randomized MACs are skipped, and any network/API failure degrades gracefully (the notification still goes out). Requires `jq` (already a runtime dependency).
 
 ### Advanced Features
 - **LuCI Web UI** ⭐ NEW - Optional `luci-app-gatekeeper` sibling package adds a six-page browser admin interface (Overview, Devices, Blacklist, Schedules, Backup/Restore, Settings) under `Services → Gatekeeper`. Independent of the Telegram bot — both surfaces share the same UCI + nftables state, neither requires the other. Auth uses LuCI's standard ACL (router admin password). See the LuCI Web UI section below for details.
@@ -296,7 +297,7 @@ gatekeeper.sh — validation order:
   5. randomized MAC + block_randomized_macs? → deny 24h (denied_macs)
   6. blacklist mode?     → auto-approve 24h (or fall through if blacklisted)
   7. active schedule?    → auto-approve until window end
-  8. otherwise          → send approval notification
+  8. otherwise          → send approval notification (OUI vendor appended; vendor cached as display name when no hostname)
   5. blacklist mode ON,
      MAC not blacklisted? → auto-approve 24h, info message
   6. active schedule?    → auto-approve until window end (silent
@@ -392,6 +393,8 @@ config gatekeeper 'main'
     option disabled '0'            # 0=active, 1=emergency-disabled (set by DISABLE)
     option schedule_notify '0'     # 0=silent, 1=info message on schedule auto-approve
     option block_randomized_macs '0'  # 0=OFF, 1=deny randomized MACs (2/6/A/E 2nd digit)
+    # OUI vendor enrichment (maclookup.app) is always on; it only reads the
+    # above options, no flag of its own. Vendor info is cached in /tmp/gatekeeper_oui.
 
 config blacklist 'blacklist'
     list mac 'aa:bb:cc:dd:ee:ff'   # Optional blacklist entries
