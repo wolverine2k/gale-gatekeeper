@@ -1,2 +1,4 @@
 # Claude Code / oh-my-claudecode runtime state
 .omc/
+
+__pycache__/

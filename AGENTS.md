@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-Gatekeeper is an OpenWrt network access controller with Telegram and optional LuCI interfaces. Root scripts are the runtime and deployment entry points: `gatekeeper.sh`, `tg_bot.sh`, `dnsmasq_trigger.sh`, `gatekeeper_trigger.sh`, `gatekeeper_sync.sh`, `deploy.sh`, and init scripts such as `tg_gatekeeper`. Package assets live under `opkg/`: UCI config in `opkg/etc/config/`, shared shell helpers in `opkg/usr/lib/gatekeeper/`, and LuCI files in `opkg/luci/`. Tests are dev-only shell scripts in `tests/`. User-facing docs are in `README.md`, `DEPLOY.md`, `QUICK_REFERENCE.md`, and `CHANGELOG.md`; images are in `assets/`.
+Gatekeeper is an OpenWrt network access controller with Telegram and optional LuCI interfaces. Root scripts are the runtime and deployment entry points: `gatekeeper.sh`, `tg_bot.sh`, `dnsmasq_trigger.sh`, `gatekeeper_trigger.sh`, `gatekeeper_sync.sh`, `deploy.sh`, and init scripts such as `tg_gatekeeper`. Package assets live under `opkg/`: UCI config in `opkg/etc/config/`, shared shell helpers in `opkg/usr/lib/gatekeeper/`, and LuCI files in `opkg/luci/`. Tests and artifact validators are dev-only shell and Python scripts in `tests/`. User-facing docs are in `README.md`, `DEPLOY.md`, `QUICK_REFERENCE.md`, and `CHANGELOG.md`; images are in `assets/`.
 
 ## Build, Test, and Development Commands
 
@@ -11,6 +11,8 @@ Gatekeeper is an OpenWrt network access controller with Telegram and optional Lu
 - `sh tests/test_backup_helpers.sh && sh tests/test_restore_helpers.sh`: verifies backup and restore parsing helpers.
 - `sh tests/test_rpcd_helpers.sh && sh tests/test_rpcd_methods.sh`: checks LuCI rpcd backend helper behavior and method dispatch.
 - `sh tests/test_ipk_packages.sh`: executes the production version/build/manifest blocks for both 23.05 and 24.10, validating prefixed names, gzip/tar containers, metadata, root ownership, payloads, permissions, checksums, and the offline postinst guard. Set `OPENWRT_BASE=23.05` or `24.10` to select one matrix case. Requires Bash, GNU tar, and GNU coreutils; on macOS prepend their Homebrew `libexec/gnubin` directories to PATH.
+- `python3 tests/validate_ipks.py "$ARTIFACT_DIR" 23.05 2.0.0 --release 1`: validates the exact generated or downloaded IPK pair and manifests without rebuilding; use `24.10` for that series. Source comparison defaults to this checkout; `--source-root` selects another matching source tree.
+- `python3 -B tests/test_validate_ipks.py`: checks validator acceptance and malformed/tampered-artifact rejection with standard-library unit tests.
 - `bash tests/test_package_deploy.sh`: tests package-mode dispatch, stable-release/manager selection, manifest/hash/ownership/trust preflights, and dry-run behavior without a router.
 - `OPENWRT_SDK=/path/to/25.12.0-sdk sh tests/test_apk_packages.sh`: builds and validates native APKs and signed feed trust with the official Linux SDK, OpenSSL, and Python 3.
 - `OPENWRT_SDK=/path/to/25.12.0-sdk sh tests/test_apk_upgrade.sh`: uses Docker and official OpenWrt feeds to verify real 25.12 installation/upgrade and edited-config preservation in a disposable rootfs; service hooks are disabled for this unbooted fixture.

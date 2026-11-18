@@ -34,7 +34,7 @@ jobs:
     - name: Test shell helpers
       run: |
         sudo apt-get update
-        sudo apt-get install -y jq
+        sudo apt-get install -y jq python3
         for test in tests/test_busybox_compat.sh tests/test_schedule_helpers.sh tests/test_backup_helpers.sh tests/test_restore_helpers.sh tests/test_reboot_command.sh tests/test_rpcd_helpers.sh tests/test_rpcd_methods.sh tests/test_randomized_mac.sh tests/test_maclookup.sh; do
           sh "$test"
         done
@@ -182,6 +182,9 @@ jobs:
         echo "Built: ${LUCI_IPK_NAME}"
         ls -lh "${LUCI_IPK_NAME}"
 
+    - name: Test IPK artifact validator
+      run: python3 -B tests/test_validate_ipks.py
+
     - name: Test package archives
       run: sh tests/test_ipk_packages.sh
 
@@ -234,6 +237,10 @@ jobs:
           hash=$(sha256sum "$file" | cut -d ' ' -f 1)
           printf 'opkg\t%s\t%s-%s\tall\t%s\t%s\n' "$name" "$PKG_VERSION" "$PKG_RELEASE" "$file" "$hash" >> packages.tsv
         done
+
+    - name: Validate generated IPK artifacts
+      run: |
+        python3 tests/validate_ipks.py "$GITHUB_WORKSPACE" "$OPENWRT_BASE" "$PKG_VERSION" --release "$PKG_RELEASE"
 
     - name: Test package deployment
       run: bash tests/test_package_deploy.sh
@@ -355,6 +362,9 @@ jobs:
         unset FEED_PRIVATE_KEY
         sh opkg/build-apk.sh --sdk "$OPENWRT_SDK" --output "$GITHUB_WORKSPACE/apk-feed" \
           --version "$PKG_VERSION" --release "$PKG_RELEASE" --signing-key "$KEY_FILE"
+
+    - name: Validate generated APK artifacts
+      run: |
         sh tests/test_apk_packages.sh "$GITHUB_WORKSPACE/apk-feed"
         if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
           printf '%s\n' 'TEST KEY ONLY: do not add this feed key to production routers.' > apk-feed/TEST-KEY-ONLY

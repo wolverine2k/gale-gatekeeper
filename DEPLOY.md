@@ -108,8 +108,11 @@ SSH keys or an SSH agent are required for package mode; the legacy
 
 ### Release CI and remaining router validation
 
-CI validates IPKs with real OpenWrt 23.05.5 and 24.10.0 parsers and builds native
-APKs using a pinned 25.12.0 SDK. Tagged releases require the maintainer-provided
+CI validates each exact generated IPK pair using `tests/validate_ipks.py` after
+manifest generation and before artifact upload, in addition to real OpenWrt
+23.05.5 and 24.10.0 parser checks. The separate 25.12 job validates its exact
+generated APK feed before upload using `tests/test_apk_packages.sh`, backed by
+the pinned official SDK. Tagged releases require the maintainer-provided
 `GATEKEEPER_APK_FEED_KEY` GitHub Actions secret. This must be the stable publisher
 private key corresponding to the public key trusted by routers. Branch/PR builds
 use disposable test keys and are marked test-only; never trust those keys on a

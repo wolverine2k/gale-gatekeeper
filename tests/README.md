@@ -1,7 +1,7 @@
 # Tests
 
-Dev-only POSIX-shell unit tests for the helpers used by `tg_bot.sh` and
-`gatekeeper.sh`. Run on a dev machine; not deployed to the router.
+Dev-only shell and Python tests for runtime helpers, packaging, artifact
+validation, and deployment. Run on a development or CI host; not deployed to the router.
 
 Run from the repository root. Run the BusyBox-compat suite on every change:
 
@@ -17,6 +17,7 @@ sh tests/test_randomized_mac.sh      # is_randomized_mac (anti-randomization heu
 sh tests/test_maclookup.sh            # lookup_mac_vendor (OUI vendor enrichment, stubbed curl)
 sh tests/test_ipk_packages.sh
 bash tests/test_package_deploy.sh
+python3 -B tests/test_validate_ipks.py
 ```
 
 Native APK tests additionally require the checksum-verified OpenWrt 25.12.0 Linux
@@ -58,6 +59,25 @@ metadata, root ownership, payload contents, executable modes, and the offline
 postinst guard. It requires Bash, GNU tar, and GNU coreutils (the CI runner
 provides them). On macOS, prepend the Homebrew `gnu-tar` and `coreutils`
 `libexec/gnubin` directories to PATH.
+`validate_ipks.py` validates an existing generated or downloaded pair without
+rebuilding it. Supply a directory containing exactly that series' two IPKs,
+`packages.tsv`, and `SHA256SUMS` (other non-IPK checkout files are allowed):
+
+```sh
+python3 tests/validate_ipks.py "$ARTIFACT_DIR" 23.05 2.0.0 --release 1
+```
+
+Use `24.10` for that series. On macOS and Linux, Python 3 and its standard library are sufficient;
+GNU tar and the OpenWrt SDK are not required for this artifact-only check. Source
+comparison defaults to the validator's repository, independent of the working
+directory; `--source-root /path/to/matching/checkout` selects another source tree.
+Validation errors fail the command and GitHub job, including under Python's
+optimization mode. Unit tests cover corrupt/malformed containers, metadata,
+checksums, unsafe entries, ownership/permissions, and payload mismatches.
+
+Both IPK matrix jobs run the artifact-only validator after writing manifests and
+before upload. The 25.12 job separately validates the actual generated APK feed
+with its native SDK tools before upload; this IPK validator does not parse APKs.
 The workflow also checks the exact release artifacts with OpenWrt 23.05.5 and
 24.10.0 `opkg --noaction install` in checksum-pinned, network-isolated root filesystems. That
 check allows expected missing-dependency errors after successful metadata parsing;

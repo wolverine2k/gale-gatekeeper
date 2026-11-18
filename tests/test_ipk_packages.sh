@@ -9,20 +9,15 @@ SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/gatekeeper-ipk-test.XXXXXX") || exit 1
 trap 'rm -rf "$SANDBOX"' 0
 trap 'exit 1' HUP INT TERM
 TMPDIR="$SANDBOX/tmp"
-GITHUB_WORKSPACE="$SANDBOX/workspace"
+WORKSPACE_ROOT="$SANDBOX/workspace"
 PKG_VERSION=${PKG_VERSION:-1.0}
 PKG_RELEASE=${PKG_RELEASE:-1}
 case "$PKG_VERSION-$PKG_RELEASE" in
     *[!A-Za-z0-9.+~-]*|'') printf '%s\n' 'FAIL invalid package version/release'; exit 1 ;;
 esac
 BASES=${OPENWRT_BASE:-'23.05 24.10'}
-export TMPDIR GITHUB_WORKSPACE PKG_VERSION PKG_RELEASE
-mkdir -p "$TMPDIR" "$GITHUB_WORKSPACE" || exit 1
-for SOURCE in gatekeeper.sh tg_bot.sh gatekeeper_trigger.sh dnsmasq_trigger.sh \
-    gatekeeper_sync.sh gatekeeper.nft gatekeeper_init tg_gatekeeper \
-    gatekeeper_trigger_listener opkg; do
-    ln -s "$REPO/$SOURCE" "$GITHUB_WORKSPACE/$SOURCE" || exit 1
-done
+export TMPDIR PKG_VERSION PKG_RELEASE
+mkdir -p "$TMPDIR" "$WORKSPACE_ROOT" || exit 1
 
 assert_eq() {
     if [ "$2" = "$3" ]; then
@@ -159,6 +154,14 @@ exit 0'; then
 
 for OPENWRT_BASE in $BASES; do
 case "$OPENWRT_BASE" in 23.05|24.10) ;; *) printf 'FAIL unsupported IPK base: %s\n' "$OPENWRT_BASE"; exit 1 ;; esac
+GITHUB_WORKSPACE="$WORKSPACE_ROOT/$OPENWRT_BASE"
+export GITHUB_WORKSPACE
+mkdir -p "$GITHUB_WORKSPACE" || exit 1
+for SOURCE in gatekeeper.sh tg_bot.sh gatekeeper_trigger.sh dnsmasq_trigger.sh \
+    gatekeeper_sync.sh gatekeeper.nft gatekeeper_init tg_gatekeeper \
+    gatekeeper_trigger_listener opkg tests; do
+    ln -s "$REPO/$SOURCE" "$GITHUB_WORKSPACE/$SOURCE" || exit 1
+done
 IPK_NAME="openwrt-${OPENWRT_BASE}-gatekeeper_${PKG_VERSION}-${PKG_RELEASE}_all.ipk"
 LUCI_IPK_NAME="openwrt-${OPENWRT_BASE}-luci-app-gatekeeper_${PKG_VERSION}-${PKG_RELEASE}_all.ipk"
 export OPENWRT_BASE IPK_NAME LUCI_IPK_NAME
@@ -196,6 +199,10 @@ if assert "$OPENWRT_BASE manifest block extraction" extract_build 'Write IPK man
         EXPECTED=$(printf 'opkg\t%s\t%s-%s\tall\t%s\t%s' "$NAME" "$PKG_VERSION" "$PKG_RELEASE" "$FILE" "$HASH")
         assert "$OPENWRT_BASE manifest $NAME basename and metadata" grep -Fx "$EXPECTED" "$GITHUB_WORKSPACE/packages.tsv"
     done
+fi
+VALIDATE_BUILD="$SANDBOX/validate-$OPENWRT_BASE.sh"
+if assert "$OPENWRT_BASE artifact validation block extraction" extract_build 'Validate generated IPK artifacts' "$VALIDATE_BUILD"; then
+    assert "$OPENWRT_BASE exact generated artifact validation" sh -c 'cd "$GITHUB_WORKSPACE" && sh "$1"' sh "$VALIDATE_BUILD"
 fi
 done
 OPENWRT_BASE=23.05
