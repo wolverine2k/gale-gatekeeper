@@ -97,7 +97,7 @@ State: `uci get gatekeeper.main.blacklist_mode` (0 or 1). MACs: `gatekeeper.blac
 | `gatekeeper_trigger_listener` | Init script — ubus listener daemon |
 | `gatekeeper_sync.sh` | Manual sync utility — syncs **both** static and blacklist MACs (accepts `static`, `blacklist`, or `all`) |
 | `deploy.sh` | Automated SCP deployment to router |
-| `.github/workflows/makefile.yml` | CI `.ipk` build (primary delivery path — hand-rolls the archive via `tar` + `ar rcs`, no SDK required) |
+| `.github/workflows/makefile.yml` | CI `.ipk` build (primary delivery path — builds nested gzip-compressed GNU tar archives, no SDK required) |
 | `opkg/Makefile` | OpenWrt SDK package recipe (alternative build path for feed integration; CI does not use this) |
 | `opkg/etc/config/gatekeeper` | UCI config template |
 | `opkg/usr/lib/gatekeeper/restore_helpers.sh` | Shared library sourced by `tg_bot.sh` AND the LuCI rpcd backend — `mac_hostname`, `is_valid_backup`, `restore_parse_to_records`, `restore_build_plan`, plus `RESTORE_*` state-file constants. Single source of truth for the BACKUP/RESTORE parser/merge engine |
@@ -162,14 +162,18 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-The workflow builds the `.ipk` directly (no OpenWrt SDK required) by assembling the `ar` archive structure manually. The built package is also uploaded as a GitHub Actions artifact on every build.
+For OpenWrt 23.05/24.10, a workflow matrix builds separate runtime/LuCI pairs with `openwrt-23.05-` or `openwrt-24.10-` filename prefixes and per-series manifests/checksums. Both `.ipk` files use gzip-compressed GNU tar archives containing `./debian-binary`, `./data.tar.gz`, and `./control.tar.gz`, with numeric root ownership. Debian-style `ar` containers are incompatible. CI runs `tests/test_ipk_packages.sh` and parser checks of the exact artifacts in pinned OpenWrt 23.05.5 and 24.10.0 root filesystems; missing dependencies are expected in that parsing-only check.
+
+For OpenWrt 25.12, `opkg/build-apk.sh` uses the pinned official SDK and repaired `opkg/Makefile` to build native `noarch` APKs prefixed `openwrt-25.12-` and a signed `packages.adb` feed whose native filename specification resolves that prefix. Internal package names remain unchanged. CI runs `tests/test_apk_packages.sh`, requires the stable `GATEKEEPER_APK_FEED_KEY` secret for tagged releases, and uses disposable marked test keys for non-tag builds. The release job waits for both format jobs and publishes the signed feed bundle alongside IPKs and manifests. HTTPS feed hosting and manual public-key trust enrollment are separate administrator steps; the deployer never disables trust checks or enrolls keys.
+
+`deploy.sh --packages DIR` dispatches to `opkg/deploy-package.sh` for stable release/manager detection, artifact/preflight validation, and native installation. Its APK mode requires `--feed-url`; direct SCP deployment remains unchanged. See DEPLOY.md for manifest, trust, unmanaged-install migration, and manual first-activation requirements. Booted-router behavior still requires manual validation.
 
 **Install from `.ipk` on router:**
 ```bash
-opkg install gatekeeper_<version>_all.ipk
-opkg install luci-app-gatekeeper_<version>_all.ipk   # optional companion package
+opkg install openwrt-23.05-gatekeeper_<version>_all.ipk
+opkg install openwrt-23.05-luci-app-gatekeeper_<version>_all.ipk   # optional companion package
 ```
-Substitute `<version>` with the version baked into the file you downloaded (e.g. `1.0.0-1`). Latest stable releases are at `https://github.com/<owner>/gale-gatekeeper/releases`; both `.ipk` files are attached automatically when a `v*` tag is pushed.
+Use the `openwrt-24.10-` prefix instead on 24.10 routers; 25.12 uses the signed APK feed described in DEPLOY.md. Substitute `<version>` with the version baked into the file you downloaded (e.g. `1.0.0-1`). Latest stable releases are at `https://github.com/<owner>/gale-gatekeeper/releases`; both `.ipk` files are attached automatically when a `v*` tag is pushed.
 
 ## Telegram Bot Commands
 
@@ -211,7 +215,7 @@ Schedule definitions live in UCI (`/etc/config/gatekeeper`) as `config schedule 
 
 ## LuCI Web UI (sibling package `luci-app-gatekeeper`)
 
-A separate ipk that adds a browser-based admin interface alongside the bot. The bot and the LuCI app are independent: both read/write the same UCI + nftables state, neither requires the other, and there is no cross-talk between them. The LuCI app is built by the same GitHub Actions workflow as the runtime package, producing a parallel `luci-app-gatekeeper_<version>_all.ipk`.
+A separate ipk that adds a browser-based admin interface alongside the bot. The bot and the LuCI app are independent: both read/write the same UCI + nftables state, neither requires the other, and there is no cross-talk between them. The LuCI app is built by the same GitHub Actions workflow as the runtime package, producing parallel `openwrt-23.05-luci-app-gatekeeper_<version>_all.ipk` / `openwrt-24.10-luci-app-gatekeeper_<version>_all.ipk` artifacts and a native `openwrt-25.12-luci-app-gatekeeper-<version>.apk` in the signed feed.
 
 **Backend** — `/usr/libexec/rpcd/gatekeeper` is a POSIX shell rpcd exec plugin exposing 31 ubus methods. Method dispatch follows the standard rpcd contract: `$0 list` emits a JSON method-and-params catalog; `$0 call <method>` reads JSON from stdin, writes JSON to stdout. The plugin sources `/usr/lib/gatekeeper/restore_helpers.sh` (provided by the runtime gatekeeper package) so backup/restore behavior matches the bot byte-for-byte.
 

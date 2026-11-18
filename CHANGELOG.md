@@ -128,6 +128,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `README.md` and `QUICK_REFERENCE.md` updated with all new commands.
 - Fixed README and QUICK_REFERENCE: removed non-existent `bypass_switch` nftables set; corrected emergency disable/enable commands to use `DISABLE`/`ENABLE` bot commands or `nft flush chain` / `fw4 reload`
 
+## [2.0.0] - 2026-11-18
+
+### Breaking changes
+- Release assets are now prefixed with their OpenWrt base series: `openwrt-23.05-`, `openwrt-24.10-`, or `openwrt-25.12-`. Use the matching per-series bundle rather than mixing artifacts and manifests.
+- OpenWrt 25.12 uses native APK v3 packages and a signed feed, not IPKs. Administrators must independently verify and enroll the publisher public key and host the signed feed over HTTPS before package deployment.
+- Native package deployment supports qualified stable 23.05, 24.10, and 25.12 releases; it refuses unsupported releases, unmanaged installations, downgrades, and incompatible runtime/LuCI pairs. The existing direct SSH/SCP development workflow remains available.
+
+### Added
+- Independent 23.05 and 24.10 IPK build-matrix jobs, plus a checksum-pinned official 25.12 SDK build producing signed native APKs and a signed `packages.adb` index.
+- Runtime and LuCI package pairs, per-series manifests/checksums, and separate release bundles. Internal package names remain `gatekeeper` and `luci-app-gatekeeper`.
+- `deploy.sh --packages DIR` with native release/manager detection, artifact and publisher verification, exact version checks, private temporary staging, and preserved native configuration handling.
+- Regression coverage for actual workflow build/version/manifest commands, signed APK metadata and HTTP fetching of prefixed filenames, deployment rejection paths, offline lifecycle guards, and native OpenWrt installation/upgrade with edited-config preservation.
+- Release publication waits for every package family and compatibility job. Non-tag feeds use clearly marked disposable test keys; tagged feeds require the stable production signing secret.
+
+### Fixed
+- Issue #1: matching-checksum release IPKs were malformed for OpenWrt opkg because their outer container used Debian-style `ar`. Both runtime and LuCI IPKs now use OpenWrt-compatible gzip-compressed GNU tar archives with numeric root ownership.
+- Packaged firewall integration scripts are executable, and newly packaged credential configuration uses mode 0600 while native conffile upgrade semantics preserve existing settings.
+- Repaired the local-source SDK recipe, configuration source path, architecture-independent declarations, and native versioned LuCI dependency metadata.
+
 ## [1.0.0] - 2026-01-XX
 
 ### Added

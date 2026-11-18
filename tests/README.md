@@ -15,7 +15,53 @@ sh tests/test_rpcd_helpers.sh
 sh tests/test_rpcd_methods.sh
 sh tests/test_randomized_mac.sh      # is_randomized_mac (anti-randomization heuristic)
 sh tests/test_maclookup.sh            # lookup_mac_vendor (OUI vendor enrichment, stubbed curl)
+sh tests/test_ipk_packages.sh
+bash tests/test_package_deploy.sh
 ```
+
+Native APK tests additionally require the checksum-verified OpenWrt 25.12.0 Linux
+SDK, OpenSSL, and Python 3:
+
+```sh
+OPENWRT_SDK=/path/to/sdk sh tests/test_apk_packages.sh
+```
+
+The APK suite verifies `openwrt-25.12-` package basenames and the signed index's
+`pkgname-spec`, including an actual native APK fetch from an isolated localhost
+HTTP server and byte-for-byte checks of the prefixed downloads.
+
+The APK suite uses ephemeral test signing keys. Never enroll those keys on a
+production router. Use the optional feed-directory argument to validate an
+existing built feed instead of rebuilding it. Package-deployment tests use
+isolated SSH/package-manager fixtures; they do not contact a router or establish
+runtime compatibility. The optional `TEST_NATIVE_APK` variant exercises real
+APK signature, index, fetch, and solver operations; its isolated database fixture
+requires a disposable Linux root test environment (as used by CI).
+
+```sh
+OPENWRT_SDK=/path/to/sdk sh tests/test_apk_upgrade.sh
+```
+
+The upgrade suite requires Docker on the same Linux host as the SDK and network
+access to official OpenWrt feeds. It builds two signed versions, verifies a pinned
+25.12.0 rootfs checksum, performs real native dependency resolution/installation
+and upgrade in a disposable container, and checks modified-config preservation.
+`IPKG_NO_SCRIPT=1` keeps live service hooks disabled in this unbooted fixture;
+the separate offline lifecycle tests exercise hook guards. This is not a booted
+router/procd/firewall test.
+
+The IPK package suite executes the actual version, build, and manifest blocks from
+`.github/workflows/makefile.yml` in a temporary workspace for both 23.05 and 24.10.
+Set `OPENWRT_BASE=23.05` or `24.10` to select just one matrix case. It verifies the
+`openwrt-<base>-` filename prefixes without changing internal package identities. It checks both packages' gzip/tar containers, control
+metadata, root ownership, payload contents, executable modes, and the offline
+postinst guard. It requires Bash, GNU tar, and GNU coreutils (the CI runner
+provides them). On macOS, prepend the Homebrew `gnu-tar` and `coreutils`
+`libexec/gnubin` directories to PATH.
+The workflow also checks the exact release artifacts with OpenWrt 23.05.5 and
+24.10.0 `opkg --noaction install` in checksum-pinned, network-isolated root filesystems. That
+check allows expected missing-dependency errors after successful metadata parsing;
+it does not claim to validate a complete router installation or runtime behavior.
 
 **macOS prerequisite:** the helpers call `date -d "YYYY-MM-DD HH:MM:SS"`,
 which BSD `date` (default on macOS) does not accept — it has no `-d` flag

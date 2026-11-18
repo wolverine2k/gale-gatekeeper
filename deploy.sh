@@ -33,6 +33,14 @@
 
 set -e  # Exit on error
 
+for package_arg in "$@"; do
+    case "$package_arg" in
+        --packages|--packages=*)
+            exec bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/opkg/deploy-package.sh" "$@"
+            ;;
+    esac
+done
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -68,7 +76,18 @@ ARGUMENTS
 
 OPTIONS
     -h, --help        Show this help message and exit.
-    --dry-run         Print every copy/remote action without touching the router.
+    --packages DIR    Use native package mode with a verified release directory.
+                      Supports stable OpenWrt 23.05/24.10 IPKs and 25.12 APKs.
+                      Combines only with --luci, --dry-run, --feed-url, and
+                      --package-manager; SSH keys or an agent are required.
+    --feed-url URL    Package mode: HTTPS directory for the signed APK feed.
+                      The publisher public key must already be trusted.
+    --package-manager auto|opkg|apk
+                      Package mode: assert the native manager; cannot override
+                      an incompatible release, ambiguous database, or trust check.
+    --dry-run         Raw mode: print copy/actions without changing the router.
+                      Package mode: verify only; APK verification uses cleaned
+                      temporary files but makes no persistent changes.
     --no-restart      Deploy files but skip the final service-restart phase.
     --restart-only    Skip all file deploys; only restart services on the router.
     --config-only     Deploy ONLY /etc/config/gatekeeper (UCI config).
@@ -105,9 +124,10 @@ MUTUALLY EXCLUSIVE FLAGS
     Notes:
       • --luci is ADDITIVE — pairs with --no-config, --dry-run, --no-restart,
         --ask-password (and with --scripts-only, subject to the rules above).
-      • --no-restart can pair with any deploy mode; it only skips the final
+      • --no-restart can pair with raw SCP modes; it only skips the final
         service-restart phase.
-      • --dry-run and --ask-password compose with every other flag.
+      • In raw SCP mode, --dry-run and --ask-password compose with other flags.
+      Package mode does not change UCI/firewall setup or enroll publisher keys.
 
 EXAMPLES
     $0 192.168.1.1                       # Full deploy + service restart

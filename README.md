@@ -73,18 +73,46 @@ Blacklist mode auto-approval:
 ## 🚀 Quick Start
 
 ### Prerequisites
-- OpenWrt 22.03+ with fw4 (nftables)
+- OpenWrt with fw4 (nftables), UCI, ubus, dnsmasq, and procd
 - Telegram account and bot token ([get one from BotFather](https://t.me/botfather))
 - SSH access to your router
 
+### Package compatibility
+
+| OpenWrt series | Native package manager | Gatekeeper packages |
+| --- | --- | --- |
+| 23.05 / 24.10 | `opkg` | Gzip/tar `.ipk` packages, architecture `all` |
+| 25.12 | `apk` | Native APK v3 packages, architecture `noarch`, distributed through a signed feed |
+| 22.03, snapshots, other releases | Not qualified by the package deployer | No automatic package deployment |
+
+Download packages with the matching `openwrt-23.05-`, `openwrt-24.10-`, or
+`openwrt-25.12-` filename prefix. Each series has a separate CI artifact and release
+bundle containing its matching manifest and checksums; installed package names
+stay unchanged. Do not mix base-series artifacts.
+
+Package-format checks are not a substitute for runtime testing on your router.
+The existing SSH/SCP deployment remains a development workflow; do not mix it
+with package-managed upgrades. See [package deployment and feed setup](DEPLOY.md#package-deployment)
+for version detection, configuration preservation, and APK publisher trust.
+
 ### 1. Install Dependencies
 
-SSH to your router and install required packages:
+SSH to your router and install required packages. For OpenWrt 23.05 / 24.10:
 
-```bash
+```sh
 opkg update
 opkg install jq curl coreutils coreutils-timeout
 ```
+
+For OpenWrt 25.12, use its native package manager:
+
+```sh
+apk update
+apk add jq curl coreutils coreutils-timeout
+```
+
+Use only feeds for the installed OpenWrt series. Do not rename an IPK to APK or
+install opkg onto an APK-based router as a compatibility workaround.
 
 ### 2. Get Telegram Credentials
 
@@ -166,9 +194,17 @@ Gatekeeper ships an optional companion package, **`luci-app-gatekeeper`**, that 
 
 ### Install
 
-```bash
-opkg install luci-app-gatekeeper_<version>_all.ipk
+On OpenWrt 23.05 / 24.10, install the matching IPK runtime and LuCI pair. On
+OpenWrt 25.12, after configuring and trusting the publisher's signed feed:
+
+```sh
+apk add gatekeeper luci-app-gatekeeper
 ```
+
+See [package deployment](DEPLOY.md#package-deployment) for the verified host-side
+installer and IPK instructions. Package installation does not replace the
+first-time dnsmasq/firewall integration steps above; check existing administrator
+hooks before changing them.
 
 The LuCI app depends on the runtime `gatekeeper` package, `luci-base`, and `rpcd`. After install, navigate in your router's LuCI panel to:
 
@@ -573,14 +609,20 @@ EOF
 
 ### Updating the LuCI app
 
-The LuCI app ships as a separate ipk and updates independently of the runtime package. No service restart is needed — the new files are picked up on the next page load:
+The LuCI app ships as a companion package in each base-series build. Prefer the
+[paired package installer](DEPLOY.md#package-deployment) so runtime/LuCI versions
+stay aligned. For a manual OpenWrt 23.05 installation with the matching runtime
+already installed:
 
 ```bash
-scp luci-app-gatekeeper_<new-version>_all.ipk root@192.168.1.1:/tmp/
-ssh root@192.168.1.1 "opkg install /tmp/luci-app-gatekeeper_<new-version>_all.ipk"
+scp openwrt-23.05-luci-app-gatekeeper_<new-version>_all.ipk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 "opkg install /tmp/openwrt-23.05-luci-app-gatekeeper_<new-version>_all.ipk"
 ```
 
-The `.ipk` is built and attached to every tagged GitHub Release alongside the runtime package — see [CHANGELOG.md](CHANGELOG.md) for release notes.
+Use `openwrt-24.10-` filenames on 24.10; 25.12 uses the signed APK feed instead.
+Native package hooks restart rpcd when needed; reload the LuCI page after updating.
+Tagged releases contain the prefixed packages and per-series bundles described
+above — see [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## 🔐 Security Considerations
 

@@ -12,12 +12,17 @@
 
 ## 🖥️ LuCI Web UI (optional)
 
-Install the sibling ipk to get a browser-based admin interface:
+Install the matching companion package to get a browser-based admin interface.
+For OpenWrt 23.05, with the matching runtime already installed:
 
 ```bash
-scp luci-app-gatekeeper_*.ipk root@192.168.1.1:/tmp/
-ssh root@192.168.1.1 "opkg install /tmp/luci-app-gatekeeper_*.ipk"
+scp openwrt-23.05-luci-app-gatekeeper_*.ipk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 "opkg install /tmp/openwrt-23.05-luci-app-gatekeeper_*.ipk"
 ```
+
+Use `openwrt-24.10-` filenames on OpenWrt 24.10. OpenWrt 25.12 uses prefixed
+APKs through the signed feed, not opkg. Prefer the verified paired package
+installer and per-series bundles described in [DEPLOY.md](DEPLOY.md#package-deployment).
 
 Then browse to `http://<router-ip>/cgi-bin/luci → Services → Gatekeeper`. Six pages:
 

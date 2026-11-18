@@ -9,29 +9,54 @@ on:
 
 jobs:
   build:
+    name: OpenWrt ${{ matrix.openwrt_base }} (IPK)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - openwrt_base: '23.05'
+            openwrt_version: '23.05.5'
+            rootfs_sha256: 383311300e1fd796f5a39bf09ad87bcedec61a7f09263f79cd1352757a3573a9
+          - openwrt_base: '24.10'
+            openwrt_version: '24.10.0'
+            rootfs_sha256: 25c1e8682bd3c4950be6480d859257bb5c86d5be36589824d43141986fe64d93
+    env:
+      OPENWRT_BASE: ${{ matrix.openwrt_base }}
+      OPENWRT_VERSION: ${{ matrix.openwrt_version }}
+      ROOTFS_SHA256: ${{ matrix.rootfs_sha256 }}
     permissions:
       contents: write
 
     steps:
     - uses: actions/checkout@v4
 
+    - name: Test shell helpers
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq
+        for test in tests/test_busybox_compat.sh tests/test_schedule_helpers.sh tests/test_backup_helpers.sh tests/test_restore_helpers.sh tests/test_reboot_command.sh tests/test_rpcd_helpers.sh tests/test_rpcd_methods.sh tests/test_randomized_mac.sh tests/test_maclookup.sh; do
+          sh "$test"
+        done
+
     - name: Set package version
       id: version
       run: |
-        PKG_VERSION=1.0.0
+        PKG_VERSION=2.0.0
         PKG_RELEASE=1
         if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
           PKG_VERSION="${GITHUB_REF_NAME#v}"
         fi
         echo "PKG_VERSION=${PKG_VERSION}" >> "$GITHUB_ENV"
         echo "PKG_RELEASE=${PKG_RELEASE}" >> "$GITHUB_ENV"
-        echo "IPK_NAME=gatekeeper_${PKG_VERSION}-${PKG_RELEASE}_all.ipk" >> "$GITHUB_ENV"
-        echo "LUCI_IPK_NAME=luci-app-gatekeeper_${PKG_VERSION}-${PKG_RELEASE}_all.ipk" >> "$GITHUB_ENV"
+        case "$OPENWRT_BASE" in 23.05|24.10) ;; *) echo 'Unsupported IPK base version' >&2; exit 1 ;; esac
+        echo "IPK_NAME=openwrt-${OPENWRT_BASE}-gatekeeper_${PKG_VERSION}-${PKG_RELEASE}_all.ipk" >> "$GITHUB_ENV"
+        echo "LUCI_IPK_NAME=openwrt-${OPENWRT_BASE}-luci-app-gatekeeper_${PKG_VERSION}-${PKG_RELEASE}_all.ipk" >> "$GITHUB_ENV"
 
     - name: Build gatekeeper .ipk package
       run: |
         set -e
+        umask 022
         STAGING="$(mktemp -d)"
 
         # Create install tree
@@ -53,7 +78,7 @@ jobs:
         install -m 644 opkg/usr/lib/gatekeeper/restore_helpers.sh "${STAGING}/data/usr/lib/gatekeeper/restore_helpers.sh"
 
         # Firewall rules → /etc/gatekeeper
-        install -m 644 gatekeeper.nft          "${STAGING}/data/etc/gatekeeper/gatekeeper.nft"
+        install -m 755 gatekeeper.nft          "${STAGING}/data/etc/gatekeeper/gatekeeper.nft"
 
         # Init scripts → /etc/init.d
         install -m 755 gatekeeper_init              "${STAGING}/data/etc/init.d/gatekeeper_init"
@@ -61,7 +86,7 @@ jobs:
         install -m 755 gatekeeper_trigger_listener "${STAGING}/data/etc/init.d/gatekeeper_trigger_listener"
 
         # UCI config template → /etc/config
-        install -m 644 opkg/etc/config/gatekeeper  "${STAGING}/data/etc/config/gatekeeper"
+        install -m 600 opkg/etc/config/gatekeeper  "${STAGING}/data/etc/config/gatekeeper"
 
         # Installed size in KB
         INSTALLED_SIZE=$(du -sk "${STAGING}/data" | cut -f1)
@@ -84,12 +109,12 @@ jobs:
         printf '/etc/config/gatekeeper\n' > "${STAGING}/control/conffiles"
 
         # Build archives
-        (cd "${STAGING}/data"    && tar czf "${STAGING}/data.tar.gz"    .)
-        (cd "${STAGING}/control" && tar czf "${STAGING}/control.tar.gz" .)
+        (cd "${STAGING}/data"    && tar --format=gnu --numeric-owner --owner=0 --group=0 -czf "${STAGING}/data.tar.gz"    .)
+        (cd "${STAGING}/control" && tar --format=gnu --numeric-owner --owner=0 --group=0 -czf "${STAGING}/control.tar.gz" .)
         printf '2.0\n' > "${STAGING}/debian-binary"
 
-        # Pack into .ipk (ar archive)
-        (cd "${STAGING}" && ar rcs "${GITHUB_WORKSPACE}/${IPK_NAME}" debian-binary control.tar.gz data.tar.gz)
+        # Pack into .ipk (OpenWrt gzip-compressed tar archive)
+        (cd "${STAGING}" && tar --format=gnu --numeric-owner --owner=0 --group=0 -czf "${GITHUB_WORKSPACE}/${IPK_NAME}" ./debian-binary ./data.tar.gz ./control.tar.gz)
 
         echo "Built: ${IPK_NAME}"
         ls -lh "${IPK_NAME}"
@@ -97,6 +122,7 @@ jobs:
     - name: Build luci-app-gatekeeper .ipk package
       run: |
         set -e
+        umask 022
         STAGING="$(mktemp -d)"
 
         mkdir -p "${STAGING}/data/usr/libexec/rpcd"
@@ -147,20 +173,79 @@ jobs:
         POSTINST
         chmod 0755 "${STAGING}/control/postinst"
 
-        (cd "${STAGING}/data"    && tar czf "${STAGING}/data.tar.gz"    .)
-        (cd "${STAGING}/control" && tar czf "${STAGING}/control.tar.gz" .)
+        (cd "${STAGING}/data"    && tar --format=gnu --numeric-owner --owner=0 --group=0 -czf "${STAGING}/data.tar.gz"    .)
+        (cd "${STAGING}/control" && tar --format=gnu --numeric-owner --owner=0 --group=0 -czf "${STAGING}/control.tar.gz" .)
         printf '2.0\n' > "${STAGING}/debian-binary"
 
-        (cd "${STAGING}" && ar rcs "${GITHUB_WORKSPACE}/${LUCI_IPK_NAME}" debian-binary control.tar.gz data.tar.gz)
+        (cd "${STAGING}" && tar --format=gnu --numeric-owner --owner=0 --group=0 -czf "${GITHUB_WORKSPACE}/${LUCI_IPK_NAME}" ./debian-binary ./data.tar.gz ./control.tar.gz)
 
         echo "Built: ${LUCI_IPK_NAME}"
         ls -lh "${LUCI_IPK_NAME}"
 
+    - name: Test package archives
+      run: sh tests/test_ipk_packages.sh
+
+    - name: Verify package parsing with the target OpenWrt opkg
+      run: |
+        set -eu
+        ROOTFS="${RUNNER_TEMP}/openwrt-${OPENWRT_VERSION}-rootfs.tar.gz"
+        curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+          "https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-${OPENWRT_VERSION}-x86-64-rootfs.tar.gz" \
+          --output "$ROOTFS"
+        printf '%s  %s\n' "$ROOTFS_SHA256" "$ROOTFS" | sha256sum -c -
+        IMAGE=$(docker import --platform linux/amd64 "$ROOTFS")
+        docker run --rm --network none \
+          --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/packages,readonly" \
+          --env "OPENWRT_BASE=$OPENWRT_BASE" \
+          "$IMAGE" /bin/sh -ec '
+            mkdir -p /var/lock
+            opkg --version
+            for package in "$@"; do
+              if output=$(opkg --noaction install "/packages/$package" 2>&1); then
+                printf "%s\n" "$output"
+              else
+                printf "%s\n" "$output"
+                name=${package#openwrt-${OPENWRT_BASE}-}
+                name=${name%%_*}
+                printf "%s\n" "$output" | while IFS= read -r line; do
+                  case "$line" in
+                    "Unknown package "*|"Collected errors:"|\
+                    " * pkg_hash_check_unresolved: cannot find dependency "*" for $name"|\
+                    " * pkg_hash_fetch_best_installation_candidate: Packages for $name found, but incompatible with the architectures configured"|\
+                    " * opkg_install_cmd: Cannot install package $name.") ;;
+                    *) exit 1 ;;
+                  esac
+                done
+                printf "%s\n" "$output" \
+                  | grep -F "pkg_hash_check_unresolved: cannot find dependency " \
+                  | grep -F " for $name"
+              fi
+              printf "PASS: OpenWrt parsed %s\n" "$package"
+            done
+          ' sh "$IPK_NAME" "$LUCI_IPK_NAME"
+
+    - name: Write IPK manifest and checksums
+      run: |
+        set -eu
+        sha256sum "$IPK_NAME" "$LUCI_IPK_NAME" > SHA256SUMS
+        : > packages.tsv
+        for name in gatekeeper luci-app-gatekeeper; do
+          file="openwrt-${OPENWRT_BASE}-${name}_${PKG_VERSION}-${PKG_RELEASE}_all.ipk"
+          hash=$(sha256sum "$file" | cut -d ' ' -f 1)
+          printf 'opkg\t%s\t%s-%s\tall\t%s\t%s\n' "$name" "$PKG_VERSION" "$PKG_RELEASE" "$file" "$hash" >> packages.tsv
+        done
+
+    - name: Test package deployment
+      run: bash tests/test_package_deploy.sh
+
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: gatekeeper-ipk
-        path: "*.ipk"
+        name: gatekeeper-openwrt-${{ matrix.openwrt_base }}-ipk
+        path: |
+          *.ipk
+          SHA256SUMS
+          packages.tsv
         if-no-files-found: error
 
     - name: Extract release notes from CHANGELOG
@@ -203,10 +288,123 @@ jobs:
         } > release-notes.with-title.md
         mv release-notes.with-title.md release-notes.md
 
+    - name: Upload release notes
+      if: startsWith(github.ref, 'refs/tags/') && matrix.openwrt_base == '23.05'
+      uses: actions/upload-artifact@v4
+      with:
+        name: gatekeeper-release-notes
+        path: release-notes.md
+        if-no-files-found: error
+
+  apk:
+    name: OpenWrt 25.12 (APK)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set package version
+      run: |
+        PKG_VERSION=2.0.0
+        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          PKG_VERSION="${GITHUB_REF_NAME#v}"
+        fi
+        echo "PKG_VERSION=$PKG_VERSION" >> "$GITHUB_ENV"
+        echo "PKG_RELEASE=1" >> "$GITHUB_ENV"
+
+    - name: Install SDK build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gawk unzip zstd python3 python3-distutils rsync file wget ca-certificates openssl libncurses-dev pkg-config jq
+
+    - name: Download verified OpenWrt 25.12.0 SDK
+      run: |
+        set -eu
+        SDK_ARCHIVE="$RUNNER_TEMP/openwrt-sdk.tar.zst"
+        curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+          https://downloads.openwrt.org/releases/25.12.0/targets/x86/64/openwrt-sdk-25.12.0-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst \
+          --output "$SDK_ARCHIVE"
+        printf '%s  %s\n' 9f371906ce6d2f95418f69fac06df58bf9df0ffc4abed6206c30f1b547fcfc12 "$SDK_ARCHIVE" | sha256sum -c -
+        mkdir "$RUNNER_TEMP/openwrt-sdk"
+        tar --zstd -xf "$SDK_ARCHIVE" --strip-components=1 -C "$RUNNER_TEMP/openwrt-sdk"
+        echo "OPENWRT_SDK=$RUNNER_TEMP/openwrt-sdk" >> "$GITHUB_ENV"
+
+    - name: Test native APK packages and feed trust
+      run: sh tests/test_apk_packages.sh
+
+    - name: Test deployment with native APK cryptography
+      run: sudo env TEST_NATIVE_APK="$OPENWRT_SDK/staging_dir/host/bin/apk" bash tests/test_package_deploy.sh
+
+    - name: Test native OpenWrt installation and upgrades
+      run: sh tests/test_apk_upgrade.sh
+
+    - name: Build signed APK feed
+      env:
+        FEED_PRIVATE_KEY: ${{ secrets.GATEKEEPER_APK_FEED_KEY }}
+      run: |
+        set -eu
+        umask 077
+        KEY_FILE="$RUNNER_TEMP/gatekeeper-feed-key.pem"
+        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          test -n "$FEED_PRIVATE_KEY" || { echo 'Configure GATEKEEPER_APK_FEED_KEY before publishing a release.' >&2; exit 1; }
+          printf '%s\n' "$FEED_PRIVATE_KEY" > "$KEY_FILE"
+        else
+          openssl ecparam -name prime256v1 -genkey -noout -out "$KEY_FILE"
+        fi
+        unset FEED_PRIVATE_KEY
+        sh opkg/build-apk.sh --sdk "$OPENWRT_SDK" --output "$GITHUB_WORKSPACE/apk-feed" \
+          --version "$PKG_VERSION" --release "$PKG_RELEASE" --signing-key "$KEY_FILE"
+        sh tests/test_apk_packages.sh "$GITHUB_WORKSPACE/apk-feed"
+        if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+          printf '%s\n' 'TEST KEY ONLY: do not add this feed key to production routers.' > apk-feed/TEST-KEY-ONLY
+        fi
+
+    - name: Upload APK feed
+      uses: actions/upload-artifact@v4
+      with:
+        name: gatekeeper-openwrt-25.12-apk-feed
+        path: apk-feed/
+        if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build, apk]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: gatekeeper-openwrt-23.05-ipk
+        path: ipk/23.05
+    - uses: actions/download-artifact@v4
+      with:
+        name: gatekeeper-openwrt-24.10-ipk
+        path: ipk/24.10
+    - uses: actions/download-artifact@v4
+      with:
+        name: gatekeeper-openwrt-25.12-apk-feed
+        path: apk-feed
+    - uses: actions/download-artifact@v4
+      with:
+        name: gatekeeper-release-notes
+    - name: Bundle versioned packages and signed feed
+      run: |
+        set -eu
+        for base in 23.05 24.10; do
+          tar -czf "openwrt-${base}-gatekeeper-packages.tar.gz" -C "ipk/$base" .
+        done
+        test ! -e apk-feed/TEST-KEY-ONLY
+        tar -czf openwrt-25.12-gatekeeper-apk-feed.tar.gz -C apk-feed .
     - name: Create GitHub Release
-      if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v2
       with:
-        files: "*.ipk"
+        files: |
+          ipk/23.05/openwrt-23.05-*.ipk
+          ipk/24.10/openwrt-24.10-*.ipk
+          apk-feed/openwrt-25.12-*.apk
+          openwrt-*-gatekeeper-packages.tar.gz
+          openwrt-25.12-gatekeeper-apk-feed.tar.gz
         body_path: release-notes.md
         generate_release_notes: true

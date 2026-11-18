@@ -1,16 +1,18 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=gatekeeper
-PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_VERSION:=$(if $(GATEKEEPER_VERSION),$(GATEKEEPER_VERSION),2.0.0)
+PKG_RELEASE:=$(if $(GATEKEEPER_RELEASE),$(GATEKEEPER_RELEASE),1)
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=@GITHUB/$(PKG_NAME)
-PKG_HASH:=
+GATEKEEPER_SOURCE_DIR?=$(abspath $(CURDIR)/..)
+GATEKEEPER_RUNTIME_FILES:=gatekeeper.sh tg_bot.sh gatekeeper_trigger.sh dnsmasq_trigger.sh gatekeeper_sync.sh gatekeeper.nft gatekeeper_init tg_gatekeeper gatekeeper_trigger_listener
+GATEKEEPER_VIEWS:=overview devices blacklist schedules backup_restore settings
+PKG_BUILD_DEPENDS:=
+PKG_BUILD_PARALLEL:=1
+PKG_CONFIG_DEPENDS:=CONFIG_USE_APK
 
 PKG_MAINTAINER:=Naresh Mehta <naresh@naresh.se>
 PKG_LICENSE:=MIT
-PKG_LICENSE_FILES:=LICENSE
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
@@ -20,7 +22,8 @@ define Package/gatekeeper
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Telegram-based Network Access Control for OpenWrt
-  URL:=https://github.com/naresh-mehta/gale-gatekeeper
+  URL:=https://github.com/wolverine2k/gale-gatekeeper
+  PKGARCH:=all
   DEPENDS:=+jq +curl +coreutils +coreutils-timeout
 endef
 
@@ -46,8 +49,25 @@ define Package/gatekeeper/conffiles
 endef
 
 define Build/Prepare
-	$(call Build/Prepare/Default)
-	cp -r $(PKG_BUILD_DIR)/* $(PKG_BUILD_DIR)/
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)/opkg/etc/config
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)/opkg/usr/lib/gatekeeper
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)/opkg/luci/usr/libexec/rpcd
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)/opkg/luci/usr/share/luci/menu.d
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)/opkg/luci/usr/share/rpcd/acl.d
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)/opkg/luci/htdocs/luci-static/resources/view/gatekeeper
+	$(CP) $(addprefix $(GATEKEEPER_SOURCE_DIR)/,$(GATEKEEPER_RUNTIME_FILES)) $(PKG_BUILD_DIR)/
+	$(CP) $(GATEKEEPER_SOURCE_DIR)/opkg/etc/config/gatekeeper $(PKG_BUILD_DIR)/opkg/etc/config/
+	$(CP) $(GATEKEEPER_SOURCE_DIR)/opkg/usr/lib/gatekeeper/restore_helpers.sh $(PKG_BUILD_DIR)/opkg/usr/lib/gatekeeper/
+	$(CP) $(GATEKEEPER_SOURCE_DIR)/opkg/luci/usr/libexec/rpcd/gatekeeper $(PKG_BUILD_DIR)/opkg/luci/usr/libexec/rpcd/
+	$(CP) $(GATEKEEPER_SOURCE_DIR)/opkg/luci/usr/share/luci/menu.d/luci-app-gatekeeper.json $(PKG_BUILD_DIR)/opkg/luci/usr/share/luci/menu.d/
+	$(CP) $(GATEKEEPER_SOURCE_DIR)/opkg/luci/usr/share/rpcd/acl.d/luci-app-gatekeeper.json $(PKG_BUILD_DIR)/opkg/luci/usr/share/rpcd/acl.d/
+	$(CP) $(addprefix $(GATEKEEPER_SOURCE_DIR)/opkg/luci/htdocs/luci-static/resources/view/gatekeeper/,$(addsuffix .js,$(GATEKEEPER_VIEWS))) $(PKG_BUILD_DIR)/opkg/luci/htdocs/luci-static/resources/view/gatekeeper/
+endef
+
+define Build/Configure
+endef
+
+define Build/Compile
 endef
 
 define Package/gatekeeper/install
@@ -66,7 +86,7 @@ define Package/gatekeeper/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/gatekeeper_init $(1)/etc/init.d/gatekeeper_init
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/tg_gatekeeper $(1)/etc/init.d/tg_gatekeeper
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/gatekeeper_trigger_listener $(1)/etc/init.d/gatekeeper_trigger_listener
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/etc/config/gatekeeper $(1)/etc/config/gatekeeper
+	$(INSTALL_CONF) $(PKG_BUILD_DIR)/opkg/etc/config/gatekeeper $(1)/etc/config/gatekeeper
 endef
 
 define Package/luci-app-gatekeeper
@@ -74,12 +94,18 @@ define Package/luci-app-gatekeeper
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
   TITLE:=LuCI web interface for Gatekeeper
-  URL:=https://github.com/naresh-mehta/gale-gatekeeper
+  URL:=https://github.com/wolverine2k/gale-gatekeeper
   # Pin gatekeeper to >= same version: the rpcd backend sources
   # /usr/lib/gatekeeper/restore_helpers.sh which is shipped by the runtime
   # gatekeeper package. An older runtime would lack the file and break the
   # rpcd backend at every call.
-  DEPENDS:=+luci-base +gatekeeper (>= $(PKG_VERSION)-$(PKG_RELEASE)) +rpcd
+  PKGARCH:=all
+  DEPENDS:=+luci-base +gatekeeper +rpcd
+  ifeq ($(CONFIG_USE_APK),y)
+    EXTRA_DEPENDS:=gatekeeper (>=$(PKG_VERSION)-r$(PKG_RELEASE))
+  else
+    EXTRA_DEPENDS:=gatekeeper (>= $(PKG_VERSION)-$(PKG_RELEASE))
+  endif
 endef
 
 define Package/luci-app-gatekeeper/description
@@ -106,7 +132,7 @@ define Package/luci-app-gatekeeper/install
 	$(INSTALL_BIN)  $(PKG_BUILD_DIR)/opkg/luci/usr/libexec/rpcd/gatekeeper $(1)/usr/libexec/rpcd/gatekeeper
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/opkg/luci/usr/share/luci/menu.d/luci-app-gatekeeper.json $(1)/usr/share/luci/menu.d/luci-app-gatekeeper.json
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/opkg/luci/usr/share/rpcd/acl.d/luci-app-gatekeeper.json $(1)/usr/share/rpcd/acl.d/luci-app-gatekeeper.json
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/opkg/luci/htdocs/luci-static/resources/view/gatekeeper/*.js $(1)/www/luci-static/resources/view/gatekeeper/
+	$(INSTALL_DATA) $(addprefix $(PKG_BUILD_DIR)/opkg/luci/htdocs/luci-static/resources/view/gatekeeper/,$(addsuffix .js,$(GATEKEEPER_VIEWS))) $(1)/www/luci-static/resources/view/gatekeeper/
 endef
 
 # postinst: restart rpcd so it discovers the newly-installed
